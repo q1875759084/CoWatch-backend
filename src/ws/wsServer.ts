@@ -4,7 +4,7 @@ import { Server } from 'http';
 import { URL } from 'url';
 import { verifyToken } from '../utils/jwt.js';
 import { getRoomMember, setMemberOnline, getAdminByRoom } from '../database/roomMember/index.js';
-import { getRoomById, setControlMode, setControllerId, setRoomStatus } from '../database/room/index.js';
+import { getRoomById, setControlMode, setControllerId } from '../database/room/index.js';
 import { getUserById } from '../database/user/index.js';
 import { addClient, removeClient, broadcast, broadcastExcept, sendToClient } from '../controllers/ws/registry.js';
 
@@ -48,8 +48,8 @@ export function initWsServer(httpServer: Server): WebSocketServer {
     }
 
     const room = getRoomById(roomId);
-    if (!room || room.status === 'closed') {
-      ws.close(1008, 'Room not found or closed');
+    if (!room) {
+      ws.close(1008, 'Room not found');
       return;
     }
 
@@ -70,7 +70,6 @@ export function initWsServer(httpServer: Server): WebSocketServer {
       type: 'ROOM_STATE',
       data: {
         videoUrl: currentRoom.video_url,
-        status: currentRoom.status,
         controlMode: currentRoom.control_mode,
         controllerId: currentRoom.controller_id,
       },
@@ -139,7 +138,6 @@ export function initWsServer(httpServer: Server): WebSocketServer {
             sendToClient(roomId, userId, { type: 'ERROR', data: { message: '请先上传视频再开始复盘' } });
             return;
           }
-          setRoomStatus(roomId, 'watching');
           broadcast(roomId, { type: 'ROOM_STARTED', data: { videoUrl: freshRoom.video_url } });
           break;
         }

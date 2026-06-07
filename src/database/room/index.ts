@@ -2,7 +2,6 @@ import { db } from '../index.js';
 
 export interface RoomRow {
   id: string;
-  status: 'waiting' | 'watching' | 'closed';
   video_url: string | null;
   control_mode: 'designated' | 'free';
   controller_id: string | null;
@@ -13,8 +12,8 @@ export interface RoomRow {
 export function createRoom(id: string): RoomRow {
   const now = Date.now();
   db.prepare(`
-    INSERT INTO rooms (id, status, video_url, control_mode, controller_id, created_at, updated_at)
-    VALUES (?, 'waiting', NULL, 'designated', NULL, ?, ?)
+    INSERT INTO rooms (id, video_url, control_mode, controller_id, created_at, updated_at)
+    VALUES (?, NULL, 'designated', NULL, ?, ?)
   `).run(id, now, now);
   return getRoomById(id)!;
 }
@@ -26,11 +25,6 @@ export function getRoomById(id: string): RoomRow | null {
 export function setVideoUrl(roomId: string, videoUrl: string): void {
   db.prepare('UPDATE rooms SET video_url = ?, updated_at = ? WHERE id = ?')
     .run(videoUrl, Date.now(), roomId);
-}
-
-export function setRoomStatus(roomId: string, status: 'waiting' | 'watching' | 'closed'): void {
-  db.prepare('UPDATE rooms SET status = ?, updated_at = ? WHERE id = ?')
-    .run(status, Date.now(), roomId);
 }
 
 export function setControlMode(roomId: string, mode: 'designated' | 'free'): void {

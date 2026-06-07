@@ -67,7 +67,6 @@ export function getAdminByRoom(roomId: string): RoomMemberWithNickname | null {
  */
 export interface UserRoomRow {
   room_id: string;
-  status: string;
   video_url: string | null;
   is_admin: 0 | 1;
   joined_at: number;
@@ -75,7 +74,7 @@ export interface UserRoomRow {
 
 export function getRoomsByUser(userId: string): UserRoomRow[] {
   return db.prepare(`
-    SELECT rm.room_id, r.status, r.video_url, rm.is_admin, rm.joined_at
+    SELECT rm.room_id, r.video_url, rm.is_admin, rm.joined_at
     FROM room_members rm
     JOIN rooms r ON r.id = rm.room_id
     WHERE rm.user_id = ?

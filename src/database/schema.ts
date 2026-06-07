@@ -20,7 +20,6 @@ export function initSchema(): void {
 
     CREATE TABLE IF NOT EXISTS rooms (
       id            TEXT PRIMARY KEY,
-      status        TEXT NOT NULL DEFAULT 'waiting',
       video_url     TEXT,
       control_mode  TEXT NOT NULL DEFAULT 'designated',
       controller_id TEXT,

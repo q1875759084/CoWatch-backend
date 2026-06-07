@@ -53,14 +53,12 @@ export const RoomsController = {
 
     const room = getRoomById(roomId);
     if (!room) { fail(res, 404, '房间不存在'); return; }
-    if (room.status === 'closed') { fail(res, 410, '房间已关闭'); return; }
 
     joinRoom(userId, roomId, false);
 
     success(res, {
       roomId,
       videoUrl: room.video_url,
-      status: room.status,
       isAdmin: false,
     });
   },
@@ -77,7 +75,6 @@ export const RoomsController = {
     const members = getMembersByRoom(roomId);
     success(res, {
       roomId: room.id,
-      status: room.status,
       videoUrl: room.video_url,
       controlMode: room.control_mode,
       controllerId: room.controller_id,
