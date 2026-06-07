@@ -20,6 +20,7 @@ export function initSchema(): void {
 
     CREATE TABLE IF NOT EXISTS rooms (
       id            TEXT PRIMARY KEY,
+      name          TEXT NOT NULL DEFAULT '',
       video_url     TEXT,
       control_mode  TEXT NOT NULL DEFAULT 'designated',
       controller_id TEXT,
@@ -37,6 +38,17 @@ export function initSchema(): void {
       PRIMARY KEY (user_id, room_id),
       FOREIGN KEY (user_id) REFERENCES users(id),
       FOREIGN KEY (room_id) REFERENCES rooms(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS room_videos (
+      id           TEXT PRIMARY KEY,
+      room_id      TEXT NOT NULL,
+      video_url    TEXT NOT NULL,
+      file_name    TEXT NOT NULL,
+      uploader_id  TEXT NOT NULL,
+      created_at   INTEGER NOT NULL,
+      FOREIGN KEY (room_id)     REFERENCES rooms(id),
+      FOREIGN KEY (uploader_id) REFERENCES users(id)
     );
   `);
 

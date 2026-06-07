@@ -3,8 +3,9 @@ import { IncomingMessage } from 'http';
 import { Server } from 'http';
 import { URL } from 'url';
 import { verifyToken } from '../utils/jwt.js';
-import { getRoomMember, setMemberOnline, getAdminByRoom } from '../database/roomMember/index.js';
-import { getRoomById, setControlMode, setControllerId } from '../database/room/index.js';
+import { getRoomMember, getAdminByRoom, getMembersByRoom } from '../database/roomMember/index.js';
+import { getRoomById, setControllerId, setVideoUrl } from '../database/room/index.js';
+import { getVideosByRoom } from '../database/roomVideo/index.js';
 import { getUserById } from '../database/user/index.js';
 import { addClient, removeClient, broadcast, broadcastExcept, sendToClient } from '../controllers/ws/registry.js';
 
@@ -12,6 +13,12 @@ interface WsMessage {
   type: string;
   data?: Record<string, unknown>;
 }
+
+/**
+ * 内存中记录每个房间的实时播放状态（不落库，进度是高频易变数据）。
+ * 新成员加入时用于初始化，避免以暂停状态进入正在播放的房间。
+ */
+const roomPlayback = new Map<string, { isPlaying: boolean; currentTime: number }>();
 
 /**
  * 初始化 WebSocket 服务
@@ -58,7 +65,6 @@ export function initWsServer(httpServer: Server): WebSocketServer {
 
     // ── 上线处理 ────────────────────────────────────────────────────────────
     addClient(roomId, userId, ws);
-    setMemberOnline(userId, roomId, true);
 
     broadcastExcept(roomId, userId, {
       type: 'MEMBER_JOINED',
@@ -66,12 +72,31 @@ export function initWsServer(httpServer: Server): WebSocketServer {
     });
 
     const currentRoom = getRoomById(roomId)!;
+    const existingVideos = getVideosByRoom(roomId);
+    const currentMembers = getMembersByRoom(roomId);
+    const playback = roomPlayback.get(roomId) ?? { isPlaying: false, currentTime: 0 };
     sendToClient(roomId, userId, {
       type: 'ROOM_STATE',
       data: {
         videoUrl: currentRoom.video_url,
         controlMode: currentRoom.control_mode,
         controllerId: currentRoom.controller_id,
+        // 下发当前播放状态，新加入成员可直接同步
+        isPlaying: playback.isPlaying,
+        currentTime: playback.currentTime,
+        videos: existingVideos.map((v) => ({
+          id: v.id,
+          videoUrl: v.video_url,
+          fileName: v.file_name,
+          uploaderId: v.uploader_id,
+          createdAt: v.created_at,
+        })),
+        // 下发当前房间内所有成员（所有已加入房间的成员）
+        members: currentMembers.map((m) => ({
+          userId: m.user_id,
+          nickname: m.nickname,
+          isAdmin: m.is_admin === 1,
+        })),
       },
     });
 
@@ -95,6 +120,9 @@ export function initWsServer(httpServer: Server): WebSocketServer {
           if (!canControl(userId, latestRoom)) return;
           const currentTime = msg.data?.currentTime as number | undefined;
           if (typeof currentTime !== 'number') return;
+          // 更新内存进度（保持 currentTime 尽量准确，isPlaying 维持上次 SYNC_STATE 的值）
+          const prev = roomPlayback.get(roomId);
+          roomPlayback.set(roomId, { isPlaying: prev?.isPlaying ?? true, currentTime });
           broadcastExcept(roomId, userId, { type: 'SYNC_PROGRESS', data: { currentTime, fromUserId: userId } });
           break;
         }
@@ -103,6 +131,8 @@ export function initWsServer(httpServer: Server): WebSocketServer {
           if (!canControl(userId, latestRoom)) return;
           const { isPlaying, currentTime } = msg.data ?? {};
           if (typeof isPlaying !== 'boolean' || typeof currentTime !== 'number') return;
+          // 更新内存中的播放状态，供新加入成员初始化
+          roomPlayback.set(roomId, { isPlaying, currentTime });
           broadcastExcept(roomId, userId, { type: 'SYNC_STATE', data: { isPlaying, currentTime } });
           break;
         }
@@ -122,23 +152,15 @@ export function initWsServer(httpServer: Server): WebSocketServer {
           break;
         }
 
-        case 'MODE_CHANGE': {
-          if (member.is_admin !== 1) return;
-          const mode = msg.data?.mode as 'designated' | 'free' | undefined;
-          if (mode !== 'designated' && mode !== 'free') return;
-          setControlMode(roomId, mode);
-          broadcast(roomId, { type: 'MODE_CHANGED', data: { mode } });
-          break;
-        }
-
-        case 'START_WATCH': {
-          if (member.is_admin !== 1) return;
-          const freshRoom = getRoomById(roomId);
-          if (!freshRoom?.video_url) {
-            sendToClient(roomId, userId, { type: 'ERROR', data: { message: '请先上传视频再开始复盘' } });
-            return;
-          }
-          broadcast(roomId, { type: 'ROOM_STARTED', data: { videoUrl: freshRoom.video_url } });
+        case 'SWITCH_VIDEO': {
+          // 任意成员都可以切换当前播放的视频
+          const videoUrl = msg.data?.videoUrl as string | undefined;
+          const videoId = msg.data?.videoId as string | undefined;
+          if (!videoUrl) return;
+          // 更新 rooms.video_url 为当前激活视频
+          setVideoUrl(roomId, videoUrl);
+          // 广播给所有成员（包括自己）
+          broadcast(roomId, { type: 'SWITCH_VIDEO', data: { videoUrl, videoId } });
           break;
         }
 
@@ -150,7 +172,6 @@ export function initWsServer(httpServer: Server): WebSocketServer {
     // ── 断线处理 ────────────────────────────────────────────────────────────
     ws.on('close', () => {
       removeClient(roomId, userId);
-      setMemberOnline(userId, roomId, false);
 
       const freshRoom = getRoomById(roomId);
       if (freshRoom && freshRoom.controller_id === userId) {
@@ -179,6 +200,5 @@ export function initWsServer(httpServer: Server): WebSocketServer {
 
 function canControl(userId: string, room: ReturnType<typeof getRoomById>): boolean {
   if (!room) return false;
-  if (room.control_mode === 'free') return true;
   return room.controller_id === userId;
 }

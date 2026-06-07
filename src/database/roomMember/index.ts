@@ -67,6 +67,7 @@ export function getAdminByRoom(roomId: string): RoomMemberWithNickname | null {
  */
 export interface UserRoomRow {
   room_id: string;
+  room_name: string;
   video_url: string | null;
   is_admin: 0 | 1;
   joined_at: number;
@@ -74,7 +75,7 @@ export interface UserRoomRow {
 
 export function getRoomsByUser(userId: string): UserRoomRow[] {
   return db.prepare(`
-    SELECT rm.room_id, r.video_url, rm.is_admin, rm.joined_at
+    SELECT rm.room_id, r.name AS room_name, r.video_url, rm.is_admin, rm.joined_at
     FROM room_members rm
     JOIN rooms r ON r.id = rm.room_id
     WHERE rm.user_id = ?
@@ -82,10 +83,4 @@ export function getRoomsByUser(userId: string): UserRoomRow[] {
   `).all(userId) as UserRoomRow[];
 }
 
-/**
- * 更新成员在线状态
- */
-export function setMemberOnline(userId: string, roomId: string, isOnline: boolean): void {
-  db.prepare('UPDATE room_members SET is_online = ? WHERE user_id = ? AND room_id = ?')
-    .run(isOnline ? 1 : 0, userId, roomId);
-}
+

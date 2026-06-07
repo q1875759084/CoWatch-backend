@@ -20,6 +20,11 @@ router.post('/:roomId/join', (req, res) => RoomsController.join(req, res));
 // 获取房间信息
 router.get('/:roomId', (req, res) => RoomsController.getInfo(req, res));
 
+// 获取房间视频列表（所有成员可见）
+router.get('/:roomId/videos', roomAuthMiddleware, (req, res) =>
+  RoomsController.listVideos(req, res),
+);
+
 // 获取上传 URL（需是房间管理员）
 router.get('/:roomId/upload-url', roomAuthMiddleware, adminAuthMiddleware, (req, res) =>
   RoomsController.getUploadUrl(req, res),
@@ -30,7 +35,7 @@ router.put('/:roomId/upload', roomAuthMiddleware, adminAuthMiddleware, (req, res
   RoomsController.uploadLocal(req, res),
 );
 
-// 确认视频上传完成（需是房间管理员）
+// 确认视频上传完成（OSS 模式，需是房间管理员）
 router.put('/:roomId/video', roomAuthMiddleware, adminAuthMiddleware, (req, res) =>
   RoomsController.setVideo(req, res),
 );
