@@ -31,8 +31,9 @@ app.use(cookieParser());
 app.use(express.json());
 
 // 本地开发模式：将 uploads 目录作为静态文件服务（OSS 模式下此目录不会被写入）
+// __dirname 在 tsx 直接运行时指向 src/，所以上溯一层到项目根目录再进 uploads
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const uploadsDir = path.resolve(__dirname, '../../uploads');
+const uploadsDir = path.resolve(__dirname, '../uploads');
 app.use('/uploads', express.static(uploadsDir));
 
 // 注册所有路由，统一前缀 /api
