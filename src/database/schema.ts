@@ -1,4 +1,5 @@
 import { db } from './index.js';
+import { seedDefaultUsers } from './user/index.js';
 
 /**
  * 初始化所有数据表（幂等，已存在则跳过）
@@ -69,4 +70,9 @@ export function initSchema(): void {
   `);
 
   console.log('✅ 数据库表初始化完成');
+
+  // 异步初始化预置账号（bcrypt hash 为异步操作，不阻塞启动）
+  seedDefaultUsers().catch((err) => {
+    console.error('❌ 预置账号初始化失败：', err);
+  });
 }
