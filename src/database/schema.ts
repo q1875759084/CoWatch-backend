@@ -50,6 +50,19 @@ export function initSchema(): void {
       FOREIGN KEY (room_id)     REFERENCES rooms(id),
       FOREIGN KEY (uploader_id) REFERENCES users(id)
     );
+
+    CREATE TABLE IF NOT EXISTS tags (
+      id          TEXT PRIMARY KEY,
+      room_id     TEXT NOT NULL,
+      video_id    TEXT NOT NULL,
+      time        REAL NOT NULL,
+      label       TEXT NOT NULL,
+      created_by  TEXT NOT NULL,
+      created_at  INTEGER NOT NULL,
+      FOREIGN KEY (room_id) REFERENCES rooms(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_tags_room_video ON tags (room_id, video_id);
   `);
 
   console.log('✅ 数据库表初始化完成');

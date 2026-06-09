@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createRoom, getRoomById, setVideoUrl, setControllerId } from '../../database/room/index.js';
 import { joinRoom, getMembersByRoom, getRoomsByUser } from '../../database/roomMember/index.js';
 import { addRoomVideo, getVideosByRoom } from '../../database/roomVideo/index.js';
+import { getTagsByRoomVideo } from '../../database/tag/index.js';
 import { generateRoomId } from '../../utils/roomId.js';
 import { isOssEnabled, getUploadUrl, getVideoUrl } from '../../services/ossService.js';
 import { success, fail } from '../../utils/response.js';
@@ -248,5 +249,32 @@ export const RoomsController = {
       },
     });
     success(res, { success: true });
+  },
+
+  /**
+   * GET /api/rooms/:roomId/tags?videoId=xxx
+   * 获取房间内某视频的所有 Tag（按时间升序）
+   */
+  async listTags(req: Request, res: Response): Promise<void> {
+    const { roomId } = req.params;
+    const { videoId } = req.query as Record<string, string>;
+
+    if (!videoId) { fail(res, 400, '缺少 videoId 参数'); return; }
+
+    const room = getRoomById(roomId);
+    if (!room) { fail(res, 404, '房间不存在'); return; }
+
+    const tags = getTagsByRoomVideo(roomId, videoId);
+    success(res, {
+      tags: tags.map((t) => ({
+        id: t.id,
+        roomId: t.room_id,
+        videoId: t.video_id,
+        time: t.time,
+        label: t.label,
+        createdBy: t.created_by,
+        createdAt: t.created_at,
+      })),
+    });
   },
 };

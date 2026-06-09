@@ -17,13 +17,18 @@ router.post('/', (req, res) => RoomsController.create(req, res));
 // 加入房间
 router.post('/:roomId/join', (req, res) => RoomsController.join(req, res));
 
-// 获取房间信息
-router.get('/:roomId', (req, res) => RoomsController.getInfo(req, res));
-
 // 获取房间视频列表（所有成员可见）
 router.get('/:roomId/videos', roomAuthMiddleware, (req, res) =>
   RoomsController.listVideos(req, res),
 );
+
+// 获取房间某视频的 Tag 列表（所有成员可见）
+router.get('/:roomId/tags', roomAuthMiddleware, (req, res) =>
+  RoomsController.listTags(req, res),
+);
+
+// 获取房间信息（放在子路由之后，避免 /:roomId 提前匹配 /videos、/tags 等路径）
+router.get('/:roomId', (req, res) => RoomsController.getInfo(req, res));
 
 // 获取上传 URL（需是房间管理员）
 router.get('/:roomId/upload-url', roomAuthMiddleware, adminAuthMiddleware, (req, res) =>

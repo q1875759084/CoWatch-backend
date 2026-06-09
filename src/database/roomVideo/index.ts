@@ -35,6 +35,13 @@ export function getRoomVideoById(id: string): RoomVideoRow | null {
 }
 
 /**
+ * 通过 video_url 反查视频记录（用于关联 tags）
+ */
+export function getVideoByUrl(videoUrl: string): RoomVideoRow | null {
+  return (db.prepare('SELECT * FROM room_videos WHERE video_url = ?').get(videoUrl) as RoomVideoRow) ?? null;
+}
+
+/**
  * 获取房间内所有视频（按上传时间升序）
  */
 export function getVideosByRoom(roomId: string): RoomVideoRow[] {

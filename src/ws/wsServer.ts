@@ -5,7 +5,8 @@ import { URL } from 'url';
 import { verifyToken } from '../utils/jwt.js';
 import { getRoomMember, getAdminByRoom, getMembersByRoom } from '../database/roomMember/index.js';
 import { getRoomById, setControllerId, setVideoUrl } from '../database/room/index.js';
-import { getVideosByRoom } from '../database/roomVideo/index.js';
+import { getVideosByRoom, getVideoByUrl } from '../database/roomVideo/index.js';
+import { addTag, deleteTag, getTagsByRoomVideo } from '../database/tag/index.js';
 import { getUserById } from '../database/user/index.js';
 import { addClient, removeClient, broadcast, broadcastExcept, sendToClient } from '../controllers/ws/registry.js';
 
@@ -75,6 +76,9 @@ export function initWsServer(httpServer: Server): WebSocketServer {
     const existingVideos = getVideosByRoom(roomId);
     const currentMembers = getMembersByRoom(roomId);
     const playback = roomPlayback.get(roomId) ?? { isPlaying: false, currentTime: 0 };
+    // 当前激活视频的 tags
+    const activeVideo = currentRoom.video_url ? getVideoByUrl(currentRoom.video_url) : null;
+    const activeTags = activeVideo ? getTagsByRoomVideo(roomId, activeVideo.id) : [];
     sendToClient(roomId, userId, {
       type: 'ROOM_STATE',
       data: {
@@ -96,6 +100,16 @@ export function initWsServer(httpServer: Server): WebSocketServer {
           userId: m.user_id,
           nickname: m.nickname,
           isAdmin: m.is_admin === 1,
+        })),
+        // 下发当前激活视频的 tags
+        tags: activeTags.map((t) => ({
+          id: t.id,
+          roomId: t.room_id,
+          videoId: t.video_id,
+          time: t.time,
+          label: t.label,
+          createdBy: t.created_by,
+          createdAt: t.created_at,
         })),
       },
     });
@@ -149,6 +163,50 @@ export function initWsServer(httpServer: Server): WebSocketServer {
             type: 'CONTROL_CHANGED',
             data: { controllerId: targetUserId, controllerNickname: targetUser?.nickname ?? targetUserId },
           });
+          break;
+        }
+
+        case 'TAG_ADD': {
+          if (!canControl(userId, latestRoom)) return;
+          const { id: tagId, videoId, time, label } = (msg.data ?? {}) as Record<string, unknown>;
+          if (
+            typeof tagId !== 'string' ||
+            typeof videoId !== 'string' ||
+            typeof time !== 'number' ||
+            typeof label !== 'string'
+          ) return;
+          const tag = addTag(tagId, roomId, videoId, time, label, userId);
+          broadcast(roomId, {
+            type: 'TAG_ADDED',
+            data: {
+              id: tag.id,
+              roomId: tag.room_id,
+              videoId: tag.video_id,
+              time: tag.time,
+              label: tag.label,
+              createdBy: tag.created_by,
+              createdAt: tag.created_at,
+            },
+          });
+          break;
+        }
+
+        case 'TAG_DELETE': {
+          if (!canControl(userId, latestRoom)) return;
+          const { id: tagId } = (msg.data ?? {}) as Record<string, unknown>;
+          if (typeof tagId !== 'string') return;
+          deleteTag(tagId);
+          broadcast(roomId, { type: 'TAG_DELETED', data: { id: tagId } });
+          break;
+        }
+
+        case 'TAG_SEEK': {
+          if (!canControl(userId, latestRoom)) return;
+          const { time } = (msg.data ?? {}) as Record<string, unknown>;
+          if (typeof time !== 'number') return;
+          // 跳转后强制全员暂停（含发送方），复用 SYNC_STATE 下行消息
+          roomPlayback.set(roomId, { isPlaying: false, currentTime: time });
+          broadcast(roomId, { type: 'SYNC_STATE', data: { isPlaying: false, currentTime: time } });
           break;
         }
 
