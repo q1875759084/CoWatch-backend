@@ -82,5 +82,3 @@ export function getRoomsByUser(userId: string): UserRoomRow[] {
     ORDER BY rm.joined_at DESC
   `).all(userId) as UserRoomRow[];
 }
-
-

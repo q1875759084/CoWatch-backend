@@ -11,12 +11,15 @@ import { db } from './index.js';
 export function initSchema(): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
-      id            TEXT PRIMARY KEY,
-      username      TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      nickname      TEXT NOT NULL,
-      created_at    INTEGER NOT NULL
+      id                   TEXT PRIMARY KEY,
+      username             TEXT UNIQUE NOT NULL,
+      password_hash        TEXT NOT NULL,
+      nickname             TEXT NOT NULL,
+      created_at           INTEGER NOT NULL,
+      is_upload_whitelist  INTEGER NOT NULL DEFAULT 0
     );
+    -- 旧数据库迁移：ALTER TABLE users ADD COLUMN is_upload_whitelist INTEGER NOT NULL DEFAULT 0;
+    -- 设置白名单：UPDATE users SET is_upload_whitelist = 1 WHERE username = '目标用户名';
 
     CREATE TABLE IF NOT EXISTS rooms (
       id            TEXT PRIMARY KEY,

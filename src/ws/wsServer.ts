@@ -72,19 +72,18 @@ export function initWsServer(httpServer: Server): WebSocketServer {
       data: { userId, nickname, isAdmin: member.is_admin === 1 },
     });
 
-    const currentRoom = getRoomById(roomId)!;
     const existingVideos = getVideosByRoom(roomId);
     const currentMembers = getMembersByRoom(roomId);
     const playback = roomPlayback.get(roomId) ?? { isPlaying: false, currentTime: 0 };
     // 当前激活视频的 tags
-    const activeVideo = currentRoom.video_url ? getVideoByUrl(currentRoom.video_url) : null;
+    const activeVideo = room.video_url ? getVideoByUrl(room.video_url) : null;
     const activeTags = activeVideo ? getTagsByRoomVideo(roomId, activeVideo.id) : [];
     sendToClient(roomId, userId, {
       type: 'ROOM_STATE',
       data: {
-        videoUrl: currentRoom.video_url,
-        controlMode: currentRoom.control_mode,
-        controllerId: currentRoom.controller_id,
+        videoUrl: room.video_url,
+        controlMode: room.control_mode,
+        controllerId: room.controller_id,
         // 下发当前播放状态，新加入成员可直接同步
         isPlaying: playback.isPlaying,
         currentTime: playback.currentTime,

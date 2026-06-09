@@ -8,7 +8,9 @@ import { joinRoom, getMembersByRoom, getRoomsByUser } from '../../database/roomM
 import { addRoomVideo, getVideosByRoom } from '../../database/roomVideo/index.js';
 import { getTagsByRoomVideo } from '../../database/tag/index.js';
 import { generateRoomId } from '../../utils/roomId.js';
-import { isOssEnabled, getUploadUrl, getVideoUrl } from '../../services/ossService.js';
+import { isOssEnabled, getUploadUrl, getVideoUrl, proxyUploadToOss } from '../../services/ossService.js';
+import { isUploadWhitelisted } from '../../database/user/index.js';
+import { addDailyBytes } from '../../middleware/uploadGuard.js';
 import { success, fail } from '../../utils/response.js';
 import { broadcast } from '../ws/registry.js';
 
@@ -134,7 +136,20 @@ export const RoomsController = {
 
   /**
    * GET /api/rooms/:roomId/upload-url
-   * OSS 模式：返回预签名 URL；本地模式：返回后端上传接口地址
+   *
+   * 根据用户白名单状态返回不同上传模式：
+   *
+   * - 本地开发模式（isOssEnabled() === false）：
+   *     mode: 'local'，前端直传到后端本地
+   *
+   * - OSS 模式 + 白名单用户：
+   *     mode: undefined（默认 OSS 直传）
+   *     返回预签名 PUT URL，前端直接 PUT 到 OSS，无需经过后端
+   *
+   * - OSS 模式 + 非白名单用户：
+   *     mode: 'proxy'
+   *     返回后端代理上传接口地址，文件经后端中转写入 OSS
+   *     uploadGuard 中间件仅挂载在 proxy 路由上，用于限制每日中转流量
    */
   async getUploadUrl(req: Request, res: Response): Promise<void> {
     const { roomId } = req.params;
@@ -149,9 +164,23 @@ export const RoomsController = {
     if (isOssEnabled()) {
       try {
         const objectKey = `cowatch/${roomId}/${uuidv4()}-${fileName}`;
-        const uploadUrl = await getUploadUrl(objectKey, fileType);
-        const videoUrl = getVideoUrl(objectKey);
-        success(res, { uploadUrl, videoUrl, fileName });
+
+        if (isUploadWhitelisted(userId)) {
+          // 白名单用户：COS 直传，返回预签名 URL
+          const uploadUrl = await getUploadUrl(objectKey, fileType);
+          const videoUrl = getVideoUrl(objectKey);
+          success(res, { uploadUrl, videoUrl, fileName });
+        } else {
+          // 非白名单用户：后端中转，返回代理上传地址
+          // objectKey 编码后作为 query 参数传递，避免路径解析冲突
+          const videoUrl = getVideoUrl(objectKey);
+          success(res, {
+            uploadUrl: `/api/rooms/${roomId}/upload-proxy?objectKey=${encodeURIComponent(objectKey)}&fileType=${encodeURIComponent(fileType)}&fileName=${encodeURIComponent(fileName)}`,
+            videoUrl,
+            fileName,
+            mode: 'proxy',
+          });
+        }
       } catch (err) {
         console.error('[getUploadUrl/oss]', err);
         fail(res, 500, '获取上传地址失败');
@@ -164,6 +193,64 @@ export const RoomsController = {
         fileName,
         mode: 'local',
       });
+    }
+  },
+
+  /**
+   * POST /api/rooms/:roomId/upload-proxy
+   * 非白名单用户专用：后端接收文件流并代理上传到 OSS
+   *
+   * 流程：
+   *   1. uploadGuard 中间件已完成 Sec-Fetch 校验 + 每日流量预检
+   *   2. 此处将 req 可读流直接 pipe 给 OSS putStream，零临时文件
+   *   3. 上传成功后，将实际写入字节数计入当日用量（addDailyBytes）
+   *   4. 写入 room_videos 并广播 VIDEO_ADDED
+   *
+   * 注意：objectKey / fileType / fileName / videoUrl 均通过 getUploadUrl 下发的 URL query 携带，
+   * 前端 PUT 时带上这些参数即可，无需额外传 body。
+   */
+  async proxyUpload(req: Request, res: Response): Promise<void> {
+    const { roomId } = req.params;
+    const userId = req.userId!;
+    const { objectKey, fileType, fileName } = req.query as Record<string, string>;
+
+    if (!objectKey || !fileType || !fileName) {
+      fail(res, 400, '缺少 objectKey / fileType / fileName 参数');
+      return;
+    }
+
+    const room = getRoomById(roomId);
+    if (!room) { fail(res, 404, '房间不存在'); return; }
+
+    try {
+      // 流式代理到 OSS，req 本身就是 Readable
+      const videoUrl = await proxyUploadToOss(objectKey, req, fileType);
+
+      // 真实上传完成后，计入当日流量（Content-Length 可被伪造，但已完成上传的字节数是真实的）
+      const realBytes = parseInt(req.headers['content-length'] ?? '0', 10);
+      if (realBytes > 0) addDailyBytes(userId, realBytes);
+
+      // 写入 room_videos 并广播
+      const videoId = uuidv4();
+      const video = addRoomVideo(videoId, roomId, videoUrl, fileName, userId);
+      setVideoUrl(roomId, videoUrl);
+
+      broadcast(roomId, {
+        type: 'VIDEO_ADDED',
+        data: {
+          id: video.id,
+          videoUrl: video.video_url,
+          fileName: video.file_name,
+          uploaderId: video.uploader_id,
+          createdAt: video.created_at,
+        },
+      });
+
+      console.log(`[proxyUpload] userId=${userId} roomId=${roomId} bytes=${realBytes} objectKey=${objectKey}`);
+      success(res, { videoUrl });
+    } catch (err) {
+      console.error('[proxyUpload]', err);
+      fail(res, 500, '代理上传失败');
     }
   },
 

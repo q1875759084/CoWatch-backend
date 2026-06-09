@@ -3,7 +3,9 @@
  *
  * 启动：node compress-test.mjs
  * 然后打开 http://localhost:4000 选择视频上传
- * 会同时生成三份：CRF 23（high）/ CRF 26（balanced）/ CRF 28（small）
+ * 会同时生成两份（在已有 23/26/28 基础上继续下探）：
+ *   CRF 30（smaller）
+ *   CRF 32（min）
  * 输出到脚本同目录下的 compress-output/ 文件夹
  */
 
@@ -39,7 +41,8 @@ const PAGE_HTML = `<!DOCTYPE html>
 </head>
 <body>
 <h2>CoWatch 本地转码测试</h2>
-<p class="hint">上传后会同时输出三份：CRF 23（high）/ CRF 26（balanced）/ CRF 28（small）<br>
+<p class="hint">上传后会依次输出两份（在已有 CRF 23/26/28 基础上继续下探）：<br>
+① CRF 30（smaller）② CRF 32（min）<br>
 输出到 <code>compress-output/</code> 目录，转码期间页面请勿关闭。</p>
 
 <input type="file" id="file" accept="video/*">
@@ -168,18 +171,17 @@ const server = http.createServer(async (req, res) => {
 
       const baseName = path.basename(originalName, path.extname(originalName));
       const presets = [
-        { preset: 'high',     crf: 23 },
-        { preset: 'balanced', crf: 26 },
-        { preset: 'small',    crf: 28 },
+        { preset: 'smaller', crf: 30 },
+        { preset: 'min',     crf: 32 },
       ];
 
-      // 三个 preset 串行转码（避免并行占满 CPU）
+      // 串行转码（避免并行占满 CPU）
       for (let i = 0; i < presets.length; i++) {
         const { preset, crf } = presets[i];
         const outPath = path.join(OUTPUT_DIR, `${baseName}_${preset}_crf${crf}.mp4`);
-        console.log(`[compress] 开始第 ${i + 1}/3 份：${preset}（CRF ${crf}）`);
+        console.log(`[compress] 开始第 ${i + 1}/${presets.length} 份：${preset}（CRF ${crf}）`);
         await runFfmpeg(TMP_PATH, outPath, crf);
-        console.log(`[compress] 第 ${i + 1}/3 份完成`);
+        console.log(`[compress] 第 ${i + 1}/${presets.length} 份完成`);
       }
 
       // 删除临时文件

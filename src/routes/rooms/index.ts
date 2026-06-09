@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { RoomsController } from '../../controllers/rooms/index.js';
 import { authMiddleware } from '../../middleware/authMiddleware.js';
 import { roomAuthMiddleware, adminAuthMiddleware } from '../../middleware/roomAuth.js';
+import { uploadGuard } from '../../middleware/uploadGuard.js';
 
 const router = Router();
 
@@ -31,8 +32,16 @@ router.get('/:roomId/tags', roomAuthMiddleware, (req, res) =>
 router.get('/:roomId', (req, res) => RoomsController.getInfo(req, res));
 
 // 获取上传 URL（需是房间管理员）
+// 白名单用户返回 OSS 预签名 URL（直传），非白名单用户返回代理上传地址（mode: 'proxy'）
 router.get('/:roomId/upload-url', roomAuthMiddleware, adminAuthMiddleware, (req, res) =>
   RoomsController.getUploadUrl(req, res),
+);
+
+// 非白名单用户代理上传（需是房间管理员）
+// uploadGuard：校验 Sec-Fetch 请求头 + 每日中转总流量限制
+// 注意：需要禁用 express.json/urlencoded 对 body 的解析，保持 req 为原始流
+router.post('/:roomId/upload-proxy', roomAuthMiddleware, adminAuthMiddleware, uploadGuard, (req, res) =>
+  RoomsController.proxyUpload(req, res),
 );
 
 // 本地模式：直接上传视频文件（需是房间管理员）

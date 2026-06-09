@@ -3,12 +3,11 @@ import { getRoomMember } from '../database/roomMember/index.js';
 
 /**
  * 扩展 Express Request 类型，挂载房间角色信息
- * （userId 由 authMiddleware 注入，此处新增 isAdmin）
+ * （userId 由 authMiddleware 注入，此处仅扩展 isAdmin）
  */
 declare global {
   namespace Express {
     interface Request {
-      userId?: string;
       isAdmin?: boolean;
     }
   }

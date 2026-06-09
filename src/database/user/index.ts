@@ -6,6 +6,7 @@ export interface UserRow {
   password_hash: string;
   nickname: string;
   created_at: number;
+  is_upload_whitelist: number; // 1 = 白名单用户（上传次数不受限制）
 }
 
 /**
@@ -44,4 +45,15 @@ export function getUserByUsername(username: string): UserRow | null {
  */
 export function checkUsernameExists(username: string): boolean {
   return !!db.prepare('SELECT 1 FROM users WHERE username = ?').get(username);
+}
+
+/**
+ * 检查用户是否在上传白名单中
+ * 白名单用户不受每日上传次数限制
+ */
+export function isUploadWhitelisted(userId: string): boolean {
+  const row = db
+    .prepare('SELECT is_upload_whitelist FROM users WHERE id = ?')
+    .get(userId) as { is_upload_whitelist: number } | undefined;
+  return row?.is_upload_whitelist === 1;
 }
