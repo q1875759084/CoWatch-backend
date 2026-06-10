@@ -131,18 +131,15 @@ export function getSignedUrl(
       (err, data) => {
         if (err) { reject(err); return; }
 
-        console.log('[OSS] getSignedUrl raw data.Url:', data.Url);
-
         // 若配置了自定义域名（CDN），将 COS 默认域名替换为自定义域名
         const baseUrl = (process.env.COS_BASE_URL ?? '').replace(/\/$/, '');
         if (baseUrl) {
-          // COS SDK 返回的 URL 域名形如 bucket.cos.region.myqcloud.com
-          // 替换为 COS_BASE_URL
-          const url = new URL(data.Url);
-          url.host = new URL(baseUrl).host;
-          url.protocol = new URL(baseUrl).protocol;
-          console.log('[OSS] getSignedUrl replaced url:', url.toString());
-          resolve(url.toString());
+          // COS SDK 返回的 URL 域名形如：
+          //   https://bucket.cos.region.myqcloud.com/key?sign...
+          // 用正则直接替换协议+域名部分，避免 new URL() 对非标准格式的解析问题
+          const cosOriginPattern = /^https?:\/\/[^/]+/;
+          const replaced = data.Url.replace(cosOriginPattern, baseUrl);
+          resolve(replaced);
         } else {
           resolve(data.Url);
         }
