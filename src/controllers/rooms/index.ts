@@ -3,7 +3,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { createRoom, getRoomById, setVideoUrl, setControllerId } from '../../database/room/index.js';
+import { createRoom, getRoomById, setControllerId } from '../../database/room/index.js';
 import { joinRoom, getMembersByRoom, getRoomsByUser } from '../../database/roomMember/index.js';
 import { addRoomVideo, getVideosByRoom } from '../../database/roomVideo/index.js';
 import { getTagsByRoomVideo } from '../../database/tag/index.js';
@@ -81,19 +81,17 @@ export const RoomsController = {
 
     joinRoom(userId, roomId, false);
 
-    success(res, {
-      roomId,
-      videoUrl: room.video_url,
-      isAdmin: false,
-    });
+    // 仅返回 roomId 供前端跳转，播放状态由 WS ROOM_STATE 下发，无需在此返回
+    success(res, { roomId });
   },
 
   /**
    * GET /api/rooms/:roomId
    * 获取房间信息（含成员列表）
    *
-   * 注意：rooms.video_url 存的是 objectKey，此处直接透传，
-   * 不在 getInfo 阶段签名——当前激活视频的播放 URL 由 WS ROOM_STATE 下发（含签名）。
+   * rooms.video_url 存的是 objectKey，不是可播放 URL。
+   * 此处以 activeObjectKey 字段返回，语义明确。
+   * 前端不得将此值直接用于 <video src>，播放 URL 必须由 WS ROOM_STATE 下发（含签名）。
    */
   async getInfo(req: Request, res: Response): Promise<void> {
     const { roomId } = req.params;
@@ -104,14 +102,14 @@ export const RoomsController = {
     success(res, {
       roomId: room.id,
       roomName: room.name,
-      videoUrl: room.video_url,
+      activeObjectKey: room.video_url,  // objectKey，不是播放 URL
       controlMode: room.control_mode,
       controllerId: room.controller_id,
+      // is_online 字段已废弃：在房间即在线，WS 断线时从列表移除，DB 不维护在线态
       members: members.map((m) => ({
         userId: m.user_id,
         nickname: m.nickname,
         isAdmin: m.is_admin === 1,
-        isOnline: m.is_online === 1,
       })),
     });
   },
@@ -274,9 +272,10 @@ export const RoomsController = {
       if (realBytes > 0) addDailyBytes(userId, realBytes);
 
       // 存 objectKey 到 room_videos
+      // 注意：不调用 setVideoUrl——上传完成不代表用户激活该视频，
+      // 激活由用户点击播放触发 SWITCH_VIDEO WS 消息后后端更新。
       const videoId = uuidv4();
       const video = addRoomVideo(videoId, roomId, objectKey, fileName, userId);
-      setVideoUrl(roomId, objectKey);
 
       // 广播时实时签名（有效期 30 分钟，从上传完成时刻起算）
       const signedUrl = await getSignedUrl(objectKey);
@@ -327,8 +326,8 @@ export const RoomsController = {
     writeStream.on('finish', () => {
       const videoId = uuidv4();
       // 存 objectKey 到 room_videos（与 COS 模式一致）
+      // 注意：不调用 setVideoUrl——上传完成不代表用户激活该视频。
       const video = addRoomVideo(videoId, roomId, objectKey, rawName, userId);
-      setVideoUrl(roomId, objectKey);
 
       const localPlayUrl = toLocalPlayUrl(objectKey);
 
@@ -371,8 +370,8 @@ export const RoomsController = {
 
     const videoId = uuidv4();
     const resolvedFileName = fileName || objectKey.split('/').pop() || 'video.mp4';
+    // 注意：不调用 setVideoUrl——上传完成不代表用户激活该视频。
     const video = addRoomVideo(videoId, roomId, objectKey, resolvedFileName, userId);
-    setVideoUrl(roomId, objectKey);
 
     // 广播时实时签名（有效期 30 分钟，从确认时刻起算）
     const signedUrl = await getSignedUrl(objectKey);

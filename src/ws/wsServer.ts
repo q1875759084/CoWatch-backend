@@ -6,10 +6,10 @@ import { verifyToken } from '../utils/jwt.js';
 import { getRoomMember, getAdminByRoom, getMembersByRoom } from '../database/roomMember/index.js';
 import { getRoomById, setControllerId, setVideoUrl } from '../database/room/index.js';
 import { getVideosByRoom } from '../database/roomVideo/index.js';
-import { addTag, deleteTag, getTagsByRoomVideo } from '../database/tag/index.js';
+import { addTag, deleteTag } from '../database/tag/index.js';
 import { getUserById } from '../database/user/index.js';
 import { addClient, removeClient, broadcast, broadcastExcept, sendToClient } from '../controllers/ws/registry.js';
-import { isOssEnabled, getSignedUrl } from '../services/ossService.js';
+import { getSignedUrl, isOssEnabled } from '../services/ossService.js';
 
 interface WsMessage {
   type: string;
@@ -21,6 +21,21 @@ interface WsMessage {
  * 新成员加入时用于初始化，避免以暂停状态进入正在播放的房间。
  */
 const roomPlayback = new Map<string, { isPlaying: boolean; currentTime: number }>();
+
+/**
+ * 每个房间的操作序列号（单调递增）。
+ * 每次广播 SYNC_STATE / TAG_SEEK 时递增并附带到消息里。
+ * 非主控收到后用于过期判断：seq 较小的消息（旧指令）直接丢弃，
+ * 确保快速连续操作（如 TAG_SEEK → play → pause）在非主控侧按最新状态落地。
+ */
+const roomSeq = new Map<string, number>();
+
+/** 获取房间当前 seq 并递增，用于广播时附带 */
+function nextSeq(roomId: string): number {
+  const seq = (roomSeq.get(roomId) ?? 0) + 1;
+  roomSeq.set(roomId, seq);
+  return seq;
+}
 
 /**
  * 将 objectKey 转换为播放 URL。
@@ -43,7 +58,7 @@ async function toPlayUrl(objectKey: string): Promise<string> {
 export function initWsServer(httpServer: Server): WebSocketServer {
   const wss = new WebSocketServer({ server: httpServer, path: '/socket' });
 
-  wss.on('connection', async (ws: WebSocket, req: IncomingMessage) => {
+  wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     // ── 连接鉴权 ────────────────────────────────────────────────────────────
     const urlObj = new URL(req.url ?? '', `http://${req.headers.host}`);
     const roomId = urlObj.searchParams.get('roomId');
@@ -85,63 +100,45 @@ export function initWsServer(httpServer: Server): WebSocketServer {
       data: { userId, nickname, isAdmin: member.is_admin === 1 },
     });
 
-    // 并发签名所有视频 + 当前激活视频
+    // 进房间时视频列表只下发 objectKey，不签名。
+    // 播放 URL 在用户点击播放（SWITCH_VIDEO）时由后端实时签名后广播。
     const existingVideos = getVideosByRoom(roomId);
     const currentMembers = getMembersByRoom(roomId);
     const playback = roomPlayback.get(roomId) ?? { isPlaying: false, currentTime: 0 };
 
-    // 当前激活视频的 tags（room.video_url 存的是 objectKey）
-    const activeVideoRow = room.video_url
-      ? existingVideos.find((v) => v.video_url === room.video_url) ?? null
-      : null;
-    const activeTags = activeVideoRow
-      ? getTagsByRoomVideo(roomId, activeVideoRow.id)
-      : [];
-
-    // 并发为所有视频生成签名 URL（含当前激活视频）
-    const [signedVideoList, signedActiveUrl] = await Promise.all([
-      Promise.all(
-        existingVideos.map(async (v) => ({
-          id: v.id,
-          objectKey: v.video_url,
-          videoUrl: await toPlayUrl(v.video_url),
-          fileName: v.file_name,
-          uploaderId: v.uploader_id,
-          createdAt: v.created_at,
-        })),
-      ),
-      room.video_url ? toPlayUrl(room.video_url) : Promise.resolve(null),
-    ]);
-
-    sendToClient(roomId, userId, {
-      type: 'ROOM_STATE',
-      data: {
-        // 当前激活视频的签名播放 URL（null 表示房间无激活视频）
-        videoUrl: signedActiveUrl,
-        controlMode: room.control_mode,
-        controllerId: room.controller_id,
-        // 下发当前播放状态，新加入成员可直接同步
-        isPlaying: playback.isPlaying,
-        currentTime: playback.currentTime,
-        // 视频列表含 objectKey + 签名播放 URL
-        videos: signedVideoList,
-        // 下发当前房间内所有成员
-        members: currentMembers.map((m) => ({
-          userId: m.user_id,
-          nickname: m.nickname,
-          isAdmin: m.is_admin === 1,
-        })),
-        // 下发当前激活视频的 tags
-        tags: activeTags.map((t) => ({
-          id: t.id,
-          roomId: t.room_id,
-          videoId: t.video_id,
-          time: t.time,
-          label: t.label,
-          createdBy: t.created_by,
-          createdAt: t.created_at,
-        })),
-      },
+    // 若当前房间已有激活视频（objectKey 存储在 room.video_url），实时签名后告知新成员
+    const activeObjectKey = room.video_url ?? null;
+    void (activeObjectKey ? toPlayUrl(activeObjectKey) : Promise.resolve(null)).then((signedUrl) => {
+      sendToClient(roomId, userId, {
+        type: 'ROOM_STATE',
+        data: {
+          // 若有激活视频，下发签名 URL；否则为 null（进房间时尚无人播放）
+          videoUrl: signedUrl,
+          activeObjectKey,
+          controlMode: room.control_mode,
+          controllerId: room.controller_id,
+          // 下发当前播放状态，新加入成员可直接同步
+          isPlaying: playback.isPlaying,
+          currentTime: playback.currentTime,
+          // 视频列表只含 objectKey，videoUrl 为 null（播放时按需签名）
+          videos: existingVideos.map((v) => ({
+            id: v.id,
+            objectKey: v.video_url,
+            videoUrl: null,
+            fileName: v.file_name,
+            uploaderId: v.uploader_id,
+            createdAt: v.created_at,
+          })),
+          // 下发当前房间内所有成员
+          members: currentMembers.map((m) => ({
+            userId: m.user_id,
+            nickname: m.nickname,
+            isAdmin: m.is_admin === 1,
+          })),
+          // tags 不随 ROOM_STATE 下发（点击播放后按需拉取）
+          tags: [],
+        },
+      });
     });
 
     console.log(`[WS] ${nickname}(${userId}) joined room ${roomId}`);
@@ -175,7 +172,8 @@ export function initWsServer(httpServer: Server): WebSocketServer {
           const { isPlaying, currentTime } = msg.data ?? {};
           if (typeof isPlaying !== 'boolean' || typeof currentTime !== 'number') return;
           roomPlayback.set(roomId, { isPlaying, currentTime });
-          broadcastExcept(roomId, userId, { type: 'SYNC_STATE', data: { isPlaying, currentTime } });
+          const seq = nextSeq(roomId);
+          broadcastExcept(roomId, userId, { type: 'SYNC_STATE', data: { isPlaying, currentTime, seq } });
           break;
         }
 
@@ -233,7 +231,10 @@ export function initWsServer(httpServer: Server): WebSocketServer {
           const { time } = (msg.data ?? {}) as Record<string, unknown>;
           if (typeof time !== 'number') return;
           roomPlayback.set(roomId, { isPlaying: false, currentTime: time });
-          broadcast(roomId, { type: 'SYNC_STATE', data: { isPlaying: false, currentTime: time } });
+          const seq = nextSeq(roomId);
+          // 排除主控自身：主控点击 tag 后本地已直接操作视频（seek+pause），
+          // 无需 WS 回环，只通知其他成员。
+          broadcastExcept(roomId, userId, { type: 'SYNC_STATE', data: { isPlaying: false, currentTime: time, seq } });
           break;
         }
 
@@ -241,11 +242,10 @@ export function initWsServer(httpServer: Server): WebSocketServer {
           /**
            * 方案 B：前端发送 objectKey，后端实时签名后广播带签名 videoUrl 的消息。
            *
-           * 签名在"切换时刻"生成，有效期 30 分钟从此时起算，
-           * 解决"进房间时统一签名 → 晚播放的视频签名已临近过期"的问题。
-           *
-           * 任意成员都可以切换当前播放的视频。
+           * 签名在"切换时刻"生成，有效期 30 分钟从此时起算。
+           * 仅主控（controller）可以切换视频。
            */
+          if (!canControl(userId, latestRoom)) return;
           const objectKey = msg.data?.objectKey as string | undefined;
           const videoId = msg.data?.videoId as string | undefined;
           if (!objectKey) return;

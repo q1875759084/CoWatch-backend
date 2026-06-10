@@ -34,7 +34,18 @@ app.use(express.json());
 // __dirname 在 tsx 直接运行时指向 src/，所以上溯一层到项目根目录再进 uploads
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const uploadsDir = path.resolve(__dirname, '../uploads');
-app.use('/uploads', express.static(uploadsDir));
+app.use('/uploads', express.static(uploadsDir, {
+  // 禁止浏览器对视频文件做 HTTP 缓存（ETag/304）。
+  // SW 的 fetch 事件只有在请求真正发出时才会触发；
+  // 浏览器命中 HTTP 缓存后直接返回 304，完全绕过 SW，导致 SW 无法拦截视频请求、
+  // 无法写入 Cache Storage、缓存永远为空。
+  // 视频缓存由 SW（Cache Storage）负责，HTTP 缓存层应退出，避免两层缓存冲突。
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('.mp4')) {
+      res.setHeader('Cache-Control', 'no-store');
+    }
+  },
+}));
 
 // 注册所有路由，统一前缀 /api
 app.use('/api', routes);
