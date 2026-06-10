@@ -1,4 +1,5 @@
 import { Readable } from 'stream';
+import { createHash } from 'crypto';
 import COS from 'cos-nodejs-sdk-v5';
 
 /**
@@ -96,28 +97,49 @@ export async function proxyUploadToOss(
 }
 
 /**
- * 生成带时效签名的 COS GET URL（用于前端播放视频）
+ * 生成带时效签名的视频 GET URL（用于前端播放视频）
  *
- * 存储桶为私有读写，所有 GET 访问必须携带有效签名。
+ * 有两种签名模式，自动按配置选择：
+ *
+ * 【CDN 模式】配置了 COS_BASE_URL + CDN_AUTH_KEY 时启用
+ *   - 使用腾讯云 CDN TypeA 时间戳鉴权：
+ *       sign = md5(CDN_AUTH_KEY + pathname + timestamp)
+ *       url  = {CDN_BASE_URL}/{objectKey}?sign={timestamp}-{rand}-{uid}-{md5}
+ *   - CDN 节点验签，过期后即使有缓存也返回 403，彻底防止 URL 泄露后被持续访问
+ *   - CDN 回源 COS 时走私有存储桶访问（控制台已配置），无需 COS 签名
+ *   - SW cache key：剥离 sign 参数（纯路径），同一视频签名轮换后仍命中缓存
+ *
+ * 【COS 直连模式】未配置 CDN_AUTH_KEY 时（本地开发 / 未接 CDN）
+ *   - 回退到 COS SDK 生成 q-sign-* 时效签名 URL
+ *   - SW cache key：剥离 q-sign-* 参数
  *
  * 有效期设计：
- *   - 签名仅需覆盖"视频首次完整下载到 SW Cache"的时间窗口
- *   - SW 缓存完成后，所有后续 Range 请求走本地 Cache Storage，不再触碰 COS
- *   - 因此有效期不需要覆盖整场复盘，只需覆盖最大文件在最慢网速下的下载时长
- *   - 签名在切换视频时（SWITCH_VIDEO）实时生成，有效期从切换时刻起算
  *   - 默认 30 分钟：覆盖大文件（~1GB）在普通带宽（~5Mbps）下的完整下载时间
- *
- * 优先使用 COS_BASE_URL（接入 CDN 后填入 CDN 域名），
- * 未配置时使用 COS 默认域名。
- *
- * cache key 策略：SW 在缓存时会剥离签名 query 参数，
- * 以纯路径（不含签名）作为 Cache Storage 的 key，
- * 保证同一视频无论签名如何轮换都能命中缓存。
+ *   - SW 缓存完成后，所有后续 Range 请求走本地 Cache Storage，不再请求源站
  */
 export function getSignedUrl(
   objectKey: string,
   expireSeconds = 30 * 60,
 ): Promise<string> {
+  const cdnBase = (process.env.COS_BASE_URL ?? '').replace(/\/$/, '');
+  const cdnAuthKey = process.env.CDN_AUTH_KEY ?? '';
+
+  // ── CDN TypeA 鉴权模式 ──────────────────────────────────────────────────────
+  if (cdnBase && cdnAuthKey) {
+    // TypeA 格式：{CDN_BASE}/{key}?sign={timestamp}-{rand}-{uid}-{md5hash}
+    //   md5hash = md5("{key}{timestamp}{rand}{uid}{CDN_AUTH_KEY}")
+    //   腾讯云文档：https://cloud.tencent.com/document/product/228/33115
+    const timestamp = Math.floor(Date.now() / 1000) + expireSeconds;
+    const rand = Math.random().toString(36).slice(2, 10); // 8 位随机串
+    const uid = '0';                                       // 固定 0，暂不启用用户体系
+    const pathname = `/${objectKey}`;
+    const rawStr = `${pathname}${timestamp}${rand}${uid}${cdnAuthKey}`;
+    const md5hash = createHash('md5').update(rawStr).digest('hex');
+    const sign = `${timestamp}-${rand}-${uid}-${md5hash}`;
+    return Promise.resolve(`${cdnBase}${pathname}?sign=${sign}`);
+  }
+
+  // ── COS 直连模式（本地开发 / 未配置 CDN 鉴权密钥）─────────────────────────
   return new Promise((resolve, reject) => {
     getClient().getObjectUrl(
       {
@@ -130,16 +152,9 @@ export function getSignedUrl(
       },
       (err, data) => {
         if (err) { reject(err); return; }
-
-        // 若配置了自定义域名（CDN），将 COS 默认域名替换为自定义域名
-        const baseUrl = (process.env.COS_BASE_URL ?? '').replace(/\/$/, '');
-        if (baseUrl) {
-          // COS SDK 返回的 URL 域名形如：
-          //   https://bucket.cos.region.myqcloud.com/key?sign...
-          // 用正则直接替换协议+域名部分，避免 new URL() 对非标准格式的解析问题
-          const cosOriginPattern = /^https?:\/\/[^/]+/;
-          const replaced = data.Url.replace(cosOriginPattern, baseUrl);
-          resolve(replaced);
+        // 若配置了 CDN 域名但无鉴权密钥（不推荐），仍做域名替换
+        if (cdnBase) {
+          resolve(data.Url.replace(/^https?:\/\/[^/]+/, cdnBase));
         } else {
           resolve(data.Url);
         }
