@@ -131,6 +131,8 @@ export function getSignedUrl(
       (err, data) => {
         if (err) { reject(err); return; }
 
+        console.log('[OSS] getSignedUrl raw data.Url:', data.Url);
+
         // 若配置了自定义域名（CDN），将 COS 默认域名替换为自定义域名
         const baseUrl = (process.env.COS_BASE_URL ?? '').replace(/\/$/, '');
         if (baseUrl) {
@@ -139,6 +141,7 @@ export function getSignedUrl(
           const url = new URL(data.Url);
           url.host = new URL(baseUrl).host;
           url.protocol = new URL(baseUrl).protocol;
+          console.log('[OSS] getSignedUrl replaced url:', url.toString());
           resolve(url.toString());
         } else {
           resolve(data.Url);
