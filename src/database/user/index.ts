@@ -50,17 +50,6 @@ export function checkUsernameExists(username: string): boolean {
 }
 
 /**
- * 检查用户是否在上传白名单中
- * 白名单用户不受每日上传次数限制
- */
-export function isUploadWhitelisted(userId: string): boolean {
-  const row = db
-    .prepare('SELECT is_upload_whitelist FROM users WHERE id = ?')
-    .get(userId) as { is_upload_whitelist: number } | undefined;
-  return row?.is_upload_whitelist === 1;
-}
-
-/**
  * 预置账号列表（注册关闭期间使用）
  * 说明：whitelist 为 true 的账号为白名单用户，上传不受次数限制
  */

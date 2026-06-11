@@ -29,40 +29,6 @@ function getClient(): COS {
 }
 
 /**
- * 生成 COS 预签名 PUT 上传 URL（白名单用户直传 COS，无需经过后端）
- *
- * COS 服务端通过 Policy 约束上传条件：
- *   - 单文件大小上限：4 GB（1小时 × 8 Mbps ÷ 8 ≈ 3.6 GB，取整）
- *   - key 必须与后端下发的 objectKey 一致
- *   - Content-Type 必须与声明的 mimeType 一致
- *
- * 参考文档：https://cloud.tencent.com/document/product/436/14690
- */
-export function getUploadUrl(
-  objectKey: string,
-  mimeType: string,
-  expireSeconds = 900,
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    getClient().getObjectUrl(
-      {
-        Bucket: process.env.COS_BUCKET!,
-        Region: process.env.COS_REGION!,
-        Key: objectKey,
-        Method: 'PUT',
-        Expires: expireSeconds,
-        Headers: { 'Content-Type': mimeType },
-        Sign: true,
-      },
-      (err, data) => {
-        if (err) reject(err);
-        else resolve(data.Url);
-      },
-    );
-  });
-}
-
-/**
  * 代理上传：将可读流直接 PUT 到 COS（非白名单用户走后端中转时使用）
  *
  * 上传成功后返回 objectKey（而非 URL），objectKey 由调用方持久化到数据库。

@@ -3,9 +3,9 @@
  *
  * 启动：node compress-test.mjs
  * 然后打开 http://localhost:4000 选择视频上传
- * 会同时生成两份（在已有 23/26/28 基础上继续下探）：
- *   CRF 30（smaller）
- *   CRF 32（min）
+ * 会同时生成两份（目标 ~1/3 原始体积，供开发测试用）：
+ *   720p-30fps CRF 36（dev-small）
+ *   720p-30fps CRF 38（dev-min）
  * 输出到脚本同目录下的 compress-output/ 文件夹
  */
 
@@ -41,8 +41,8 @@ const PAGE_HTML = `<!DOCTYPE html>
 </head>
 <body>
 <h2>CoWatch 本地转码测试</h2>
-<p class="hint">上传后会依次输出两份（在已有 CRF 23/26/28 基础上继续下探）：<br>
-① CRF 30（smaller）② CRF 32（min）<br>
+<p class="hint">上传后会依次输出两份（目标 ~1/3 原始体积，720p 30fps）：<br>
+① 720p CRF 36（dev-small）② 720p CRF 38（dev-min）<br>
 输出到 <code>compress-output/</code> 目录，转码期间页面请勿关闭。</p>
 
 <input type="file" id="file" accept="video/*">
@@ -123,16 +123,19 @@ function runFfmpeg(inputPath, outputPath, crf) {
   return new Promise((resolve, reject) => {
     const args = [
       '-i', inputPath,
+      // 缩放到 720p（保持宽高比），帧率降到 30fps
+      '-vf', 'scale=-2:720',
+      '-r', '30',
       '-c:v', 'libx264',
       '-crf', String(crf),
       '-preset', 'fast',
       '-c:a', 'aac',
-      '-b:a', '128k',
+      '-b:a', '96k',
       '-movflags', '+faststart',
       '-y',
       outputPath,
     ];
-    console.log(`[ffmpeg] CRF ${crf} → ${path.basename(outputPath)}`);
+    console.log(`[ffmpeg] 720p-30fps CRF ${crf} → ${path.basename(outputPath)}`);
     const proc = spawn('ffmpeg', args);
     proc.stderr.on('data', (d) => process.stdout.write(d));
     proc.on('close', (code) => {
@@ -171,8 +174,8 @@ const server = http.createServer(async (req, res) => {
 
       const baseName = path.basename(originalName, path.extname(originalName));
       const presets = [
-        { preset: 'smaller', crf: 30 },
-        { preset: 'min',     crf: 32 },
+        { preset: 'dev-small', crf: 36 },
+        { preset: 'dev-min',   crf: 38 },
       ];
 
       // 串行转码（避免并行占满 CPU）

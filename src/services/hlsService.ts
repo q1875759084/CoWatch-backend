@@ -180,8 +180,7 @@ export async function transcodeToHls(
  * 每次请求此接口都会重新生成，片段签名 URL 含 2 小时有效期，
  * 跨天复盘时前端重新请求即可刷新签名，缓存仍通过 SW 的 cache-first 命中。
  *
- * @param videoId   room_videos.id
- * @param roomId    所属房间 id（仅用于本地模式路径构造）
+ * @param videoId    room_videos.id
  * @param uploadsDir 本地模式：uploads 目录的绝对路径
  * @returns         m3u8 文本字符串
  */
