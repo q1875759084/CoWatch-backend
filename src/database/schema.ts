@@ -8,6 +8,8 @@ import { seedDefaultUsers } from './user/index.js';
  *   users        — 注册账号，唯一身份凭证
  *   rooms        — 复盘房间
  *   room_members — 用户与房间的关联关系 + 房间内角色（替代旧 members 表）
+ *   room_videos  — 房间内上传的视频记录
+ *   tags         — 视频复盘标记点
  */
 export function initSchema(): void {
   db.exec(`
@@ -19,8 +21,6 @@ export function initSchema(): void {
       created_at           INTEGER NOT NULL,
       is_upload_whitelist  INTEGER NOT NULL DEFAULT 0
     );
-    -- 旧数据库迁移：ALTER TABLE users ADD COLUMN is_upload_whitelist INTEGER NOT NULL DEFAULT 0;
-    -- 设置白名单：UPDATE users SET is_upload_whitelist = 1 WHERE username = '目标用户名';
 
     CREATE TABLE IF NOT EXISTS rooms (
       id            TEXT PRIMARY KEY,
@@ -56,9 +56,6 @@ export function initSchema(): void {
       FOREIGN KEY (room_id)     REFERENCES rooms(id),
       FOREIGN KEY (uploader_id) REFERENCES users(id)
     );
-    -- 旧数据库迁移（已有 room_videos 表的实例需手动执行）：
-    -- ALTER TABLE room_videos ADD COLUMN hls_prefix TEXT;
-    -- ALTER TABLE room_videos ADD COLUMN hls_status TEXT NOT NULL DEFAULT 'pending';
 
     CREATE TABLE IF NOT EXISTS tags (
       id          TEXT PRIMARY KEY,
@@ -74,10 +71,54 @@ export function initSchema(): void {
     CREATE INDEX IF NOT EXISTS idx_tags_room_video ON tags (room_id, video_id);
   `);
 
+  // 幂等补列迁移：对已存在的旧表自动补齐缺失的列，避免因 CREATE TABLE IF NOT EXISTS
+  // 跳过建表导致新增列永远不出现。每个 ALTER TABLE 单独 try/catch，互不影响。
+  runMigrations();
+
   console.log('✅ 数据库表初始化完成');
 
   // 异步初始化预置账号（bcrypt hash 为异步操作，不阻塞启动）
   seedDefaultUsers().catch((err) => {
     console.error('❌ 预置账号初始化失败：', err);
   });
+}
+
+/**
+ * 增量列迁移（幂等）
+ *
+ * 每条迁移对应一次字段新增，SQLite 不支持 IF NOT EXISTS 语法，
+ * 所以用 try/catch 捕获 "duplicate column" 错误来实现幂等。
+ * 新增字段时在此处追加一条 alterColumn 调用即可。
+ */
+function runMigrations(): void {
+  const migrations: Array<{ sql: string; desc: string }> = [
+    {
+      sql: 'ALTER TABLE users ADD COLUMN is_upload_whitelist INTEGER NOT NULL DEFAULT 0',
+      desc: 'users.is_upload_whitelist',
+    },
+    {
+      sql: 'ALTER TABLE room_videos ADD COLUMN hls_prefix TEXT',
+      desc: 'room_videos.hls_prefix',
+    },
+    {
+      sql: "ALTER TABLE room_videos ADD COLUMN hls_status TEXT NOT NULL DEFAULT 'pending'",
+      desc: 'room_videos.hls_status',
+    },
+  ];
+
+  for (const { sql, desc } of migrations) {
+    try {
+      db.prepare(sql).run();
+      console.log(`✅ 迁移成功：${desc}`);
+    } catch (err) {
+      // "duplicate column name" 表示列已存在，属于正常情况，静默跳过
+      const msg = (err as Error).message ?? '';
+      if (msg.includes('duplicate column name')) {
+        // 列已存在，跳过
+      } else {
+        // 其他错误（如语法错误）需要抛出，避免静默掩盖真实问题
+        throw err;
+      }
+    }
+  }
 }
