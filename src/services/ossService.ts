@@ -129,11 +129,16 @@ export function getSignedUrl(
     // TypeA 格式：{CDN_BASE}/{key}?sign={timestamp}-{rand}-{uid}-{md5hash}
     //   md5hash = md5("{key}{timestamp}{rand}{uid}{CDN_AUTH_KEY}")
     //   腾讯云文档：https://cloud.tencent.com/document/product/228/33115
-    const timestamp = Math.floor(Date.now() / 1000) + expireSeconds;
+    // TypeA 的 timestamp 是起始时间（当前时间），有效时间窗口由 CDN 控制台配置的 expireSeconds 控制
+    // 注意：CDN 控制台里「有效时间」= 1800s，与后端 expireSeconds 保持一致即可，此处不叠加
+    const timestamp = Math.floor(Date.now() / 1000);
     const rand = Math.random().toString(36).slice(2, 10); // 8 位随机串
     const uid = '0';                                       // 固定 0，暂不启用用户体系
     const pathname = `/${objectKey}`;
-    const rawStr = `${pathname}${timestamp}${rand}${uid}${cdnAuthKey}`;
+    // 腾讯云 CDN TypeA 签名公式（通过鉴权计算器逆向验证）：
+    //   md5(path + "-" + timestamp + "-" + rand + "-" + uid + "-" + key)
+    // 参考：https://cloud.tencent.com/document/product/228/41623
+    const rawStr = `${pathname}-${timestamp}-${rand}-${uid}-${cdnAuthKey}`;
     const md5hash = createHash('md5').update(rawStr).digest('hex');
     const sign = `${timestamp}-${rand}-${uid}-${md5hash}`;
     return Promise.resolve(`${cdnBase}${pathname}?sign=${sign}`);
