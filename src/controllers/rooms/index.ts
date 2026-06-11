@@ -1,6 +1,7 @@
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import os from 'os';
 import { Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { createRoom, getRoomById, setControllerId } from '../../database/room/index.js';
@@ -8,7 +9,7 @@ import { joinRoom, getMembersByRoom, getRoomsByUser } from '../../database/roomM
 import { addRoomVideo, getVideosByRoom } from '../../database/roomVideo/index.js';
 import { getTagsByRoomVideo } from '../../database/tag/index.js';
 import { generateRoomId } from '../../utils/roomId.js';
-import { isOssEnabled, proxyUploadToOss } from '../../services/ossService.js';
+import { isOssEnabled } from '../../services/ossService.js';
 import { addDailyBytes } from '../../middleware/uploadGuard.js';
 import { transcodeToHls, generateM3u8 } from '../../services/hlsService.js';
 import { success, fail } from '../../utils/response.js';
@@ -198,16 +199,20 @@ export const RoomsController = {
 
   /**
    * POST /api/rooms/:roomId/upload-proxy
-   * 后端接收文件流并代理上传到 COS，完成后异步触发 HLS 切片。
+   * 后端接收文件流，先落盘临时目录，立即响应前端，然后异步切片并上传到 COS。
    *
    * 流程：
    *   1. uploadGuard 中间件已完成 Sec-Fetch 校验 + 每日流量预检
-   *   2. 此处将 req 可读流直接 pipe 给 COS putStream，零临时文件
-   *   3. 上传成功后，将实际写入字节数计入当日用量
-   *   4. 写入 room_videos（hls_status: 'pending'），立即返回 200
-   *   5. 异步执行 ffmpeg 切片，切片完成后广播 VIDEO_ADDED（含 m3u8ObjectKey）
+   *   2. 将 req 流 pipe 到 /tmp/cowatch-{uuid}.mp4（临时文件）
+   *   3. 写完后立即写入 DB 并响应前端 200（进度条立刻跳 100%，进入"切片中"状态）
+   *   4. 后台异步：ffmpeg 读本地临时文件切片 → 上传 .ts 到 COS → 删临时文件
+   *   5. 切片完成后广播 VIDEO_ADDED
+   *
+   * 与旧方案的区别：
+   *   旧：req → COS（阻塞等待 COS 写完）→ 响应前端 → ffmpeg 从 CDN URL 下载（容器内 DNS 失败）
+   *   新：req → 临时文件（本地 I/O）→ 立即响应前端 → ffmpeg 读临时文件（无网络依赖）→ 上传 .ts
    */
-  async proxyUpload(req: Request, res: Response): Promise<void> {
+  proxyUpload(req: Request, res: Response): void {
     const { roomId } = req.params;
     const userId = req.userId!;
     const { objectKey, fileType, fileName } = req.query as Record<string, string>;
@@ -220,9 +225,12 @@ export const RoomsController = {
     const room = getRoomById(roomId);
     if (!room) { fail(res, 404, '房间不存在'); return; }
 
-    try {
-      await proxyUploadToOss(objectKey, req, fileType);
+    // 临时文件路径：/tmp/cowatch-{uuid}.mp4
+    const tmpFile = path.join(os.tmpdir(), `cowatch-${uuidv4()}.mp4`);
+    const writeStream = fs.createWriteStream(tmpFile);
+    req.pipe(writeStream);
 
+    writeStream.on('finish', () => {
       const realBytes = parseInt(req.headers['content-length'] ?? '0', 10);
       if (realBytes > 0) addDailyBytes(userId, realBytes);
 
@@ -233,18 +241,15 @@ export const RoomsController = {
       // 立即响应前端，切片在后台异步进行
       success(res, { objectKey, videoId: video.id });
 
-      // 切片目录前缀：cowatch/{roomId}/{videoId}/
       const hlsPrefix = `cowatch/${roomId}/${videoId}/`;
+      console.log(`[proxyUpload] 开始异步切片：videoId=${videoId} tmpFile=${tmpFile}`);
 
-      console.log(`[proxyUpload] 开始异步切片：videoId=${videoId} objectKey=${objectKey}`);
-
-      // 异步切片，切片完成后广播 VIDEO_ADDED
+      // 异步切片：ffmpeg 读本地临时文件，无需从 COS/CDN 下载
       void transcodeToHls(
         videoId,
-        objectKey,
+        tmpFile,
         hlsPrefix,
         () => {
-          // 切片成功：广播 VIDEO_ADDED，videoUrl 为 m3u8 API 路径
           broadcast(roomId, {
             type: 'VIDEO_ADDED',
             data: {
@@ -261,7 +266,6 @@ export const RoomsController = {
         },
         (err) => {
           console.error(`[proxyUpload] 切片失败：videoId=${videoId}`, err.message);
-          // 切片失败：广播错误通知（可选），让前端提示用户
           broadcast(roomId, {
             type: 'VIDEO_SLICE_ERROR',
             data: {
@@ -271,11 +275,15 @@ export const RoomsController = {
             },
           });
         },
+        undefined, // uploadsDir：COS 模式不需要
+        true,      // isTmpFile：切片完成后删除此临时文件
       );
-    } catch (err) {
-      console.error('[proxyUpload]', err);
-      fail(res, 500, '代理上传失败');
-    }
+    });
+
+    writeStream.on('error', (err) => {
+      console.error('[proxyUpload] 写临时文件失败', err);
+      fail(res, 500, '文件接收失败');
+    });
   },
 
   /**

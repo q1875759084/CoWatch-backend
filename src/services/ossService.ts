@@ -1,4 +1,3 @@
-import { Readable } from 'stream';
 import { createHash } from 'crypto';
 import fs from 'fs';
 import COS from 'cos-nodejs-sdk-v5';
@@ -26,41 +25,6 @@ function getClient(): COS {
     });
   }
   return client;
-}
-
-/**
- * 代理上传：将可读流直接 PUT 到 COS（非白名单用户走后端中转时使用）
- *
- * 上传成功后返回 objectKey（而非 URL），objectKey 由调用方持久化到数据库。
- * 播放时通过 getSignedUrl(objectKey) 实时生成时效签名 URL 下发给前端。
- *
- * @param objectKey  COS 对象键
- * @param stream     来自 req 的可读流（req 本身即是 Readable）
- * @param mimeType   文件 MIME 类型
- * @returns          objectKey（调用方存库用）
- */
-export async function proxyUploadToOss(
-  objectKey: string,
-  stream: Readable,
-  mimeType: string,
-): Promise<string> {
-  await new Promise<void>((resolve, reject) => {
-    getClient().putObject(
-      {
-        Bucket: process.env.COS_BUCKET!,
-        Region: process.env.COS_REGION!,
-        Key: objectKey,
-        ContentType: mimeType,
-        Body: stream,
-      },
-      (err) => {
-        if (err) reject(err);
-        else resolve();
-      },
-    );
-  });
-  // 返回 objectKey，不返回 URL（URL 需要签名，由上层按需生成）
-  return objectKey;
 }
 
 /**

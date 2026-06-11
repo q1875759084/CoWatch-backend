@@ -6,7 +6,6 @@ import ffmpegBin from 'ffmpeg-static';
 import { getRoomVideoById, updateHlsStatus } from '../database/roomVideo/index.js';
 import {
   isOssEnabled,
-  getSignedUrl,
   uploadHlsSegment,
   getHlsSegmentSignedUrl,
   listHlsSegments,
@@ -76,27 +75,31 @@ function runFfmpeg(inputPath: string, tmpDir: string): Promise<void> {
 // ─── 核心切片流程 ──────────────────────────────────────────────────────────────
 
 /**
- * 将已上传到 COS / 本地磁盘的 mp4 文件通过 ffmpeg -c copy 切片，
+ * 将 mp4 文件通过 ffmpeg -c copy 切片，
  * 生成 .ts 片段并上传到 COS（COS 模式）或写入本地目录（本地模式），
  * 最后更新 room_videos 的 hls_* 字段。
  *
  * 此函数为异步后台任务，调用方 fire-and-forget；
  * 切片完成后由调用方负责广播 VIDEO_ADDED。
  *
- * @param videoId    room_videos.id
- * @param objectKey  原始 mp4 的 COS objectKey（COS 模式）或本地文件相对路径（本地模式）
- * @param hlsPrefix  切片目录前缀，如 cowatch/{roomId}/{uuid}/
- * @param onDone     切片完成回调，调用方在此处广播 VIDEO_ADDED
- * @param onError    切片失败回调
- * @param uploadsDir 本地模式：uploads 目录的绝对路径
+ * @param videoId      room_videos.id
+ * @param inputPath    ffmpeg 输入：
+ *                       - COS 模式（proxyUpload）：/tmp/cowatch-{uuid}.mp4（临时文件绝对路径）
+ *                       - 本地模式（uploadLocal）：objectKey 相对路径（相对于 uploadsDir）
+ * @param hlsPrefix    切片目录前缀，如 cowatch/{roomId}/{uuid}/
+ * @param onDone       切片完成回调，调用方在此处广播 VIDEO_ADDED
+ * @param onError      切片失败回调
+ * @param uploadsDir   本地模式：uploads 目录的绝对路径（COS 模式传 undefined）
+ * @param isTmpFile    true 时，切片完成或失败后删除 inputPath 临时文件（COS 模式使用）
  */
 export async function transcodeToHls(
   videoId: string,
-  objectKey: string,
+  inputPath: string,
   hlsPrefix: string,
   onDone: () => void,
   onError: (err: Error) => void,
   uploadsDir?: string,
+  isTmpFile = false,
 ): Promise<void> {
   const tmpDir = path.join(os.tmpdir(), `cowatch-hls-${videoId}`);
 
@@ -107,15 +110,14 @@ export async function transcodeToHls(
     // 2. 确定 ffmpeg 输入路径
     let ffmpegInput: string;
     if (isOssEnabled()) {
-      // COS 模式：直接用带签名的临时 URL 作为输入，无需本地落盘
-      // 有效期 1 小时，足够大部分切片任务完成
-      ffmpegInput = await getSignedUrl(objectKey, 3600);
+      // COS 模式：inputPath 已是临时文件的绝对路径，直接使用，无需网络请求
+      ffmpegInput = inputPath;
     } else {
-      // 本地模式：从 uploads 目录读取
+      // 本地模式：inputPath 为 objectKey 相对路径，需拼接 uploadsDir
       if (!uploadsDir) {
         throw new Error('[hlsService] 本地模式下 uploadsDir 不能为空');
       }
-      ffmpegInput = path.join(uploadsDir, objectKey);
+      ffmpegInput = path.join(uploadsDir, inputPath);
     }
 
     // 3. 执行 ffmpeg 切片
@@ -165,10 +167,17 @@ export async function transcodeToHls(
     updateHlsStatus(videoId, '', 'error');
     onError(error);
   } finally {
-    // 清理临时目录（本地模式下 .ts 已 rename 走，tmpDir 为空；COS 模式下需清理）
+    // 清理切片临时目录（本地模式下 .ts 已 rename 走，tmpDir 为空；COS 模式下需清理）
     fs.rm(tmpDir, { recursive: true, force: true }, (rmErr) => {
       if (rmErr) console.warn('[hlsService] 临时目录清理失败：', rmErr.message);
     });
+    // COS 模式：删除 proxyUpload 落盘的原始临时文件
+    if (isTmpFile) {
+      fs.rm(inputPath, { force: true }, (rmErr) => {
+        if (rmErr) console.warn('[hlsService] 临时文件清理失败：', rmErr.message);
+        else console.log('[hlsService] 临时文件已清理：', inputPath);
+      });
+    }
   }
 }
 
