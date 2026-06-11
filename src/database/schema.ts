@@ -51,9 +51,14 @@ export function initSchema(): void {
       file_name    TEXT NOT NULL,
       uploader_id  TEXT NOT NULL,
       created_at   INTEGER NOT NULL,
+      hls_prefix   TEXT,
+      hls_status   TEXT NOT NULL DEFAULT 'pending',
       FOREIGN KEY (room_id)     REFERENCES rooms(id),
       FOREIGN KEY (uploader_id) REFERENCES users(id)
     );
+    -- 旧数据库迁移（已有 room_videos 表的实例需手动执行）：
+    -- ALTER TABLE room_videos ADD COLUMN hls_prefix TEXT;
+    -- ALTER TABLE room_videos ADD COLUMN hls_status TEXT NOT NULL DEFAULT 'pending';
 
     CREATE TABLE IF NOT EXISTS tags (
       id          TEXT PRIMARY KEY,

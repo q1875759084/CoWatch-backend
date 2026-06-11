@@ -8,25 +8,15 @@ import { joinRoom, getMembersByRoom, getRoomsByUser } from '../../database/roomM
 import { addRoomVideo, getVideosByRoom } from '../../database/roomVideo/index.js';
 import { getTagsByRoomVideo } from '../../database/tag/index.js';
 import { generateRoomId } from '../../utils/roomId.js';
-import { isOssEnabled, getUploadUrl, getSignedUrl, proxyUploadToOss } from '../../services/ossService.js';
-import { isUploadWhitelisted } from '../../database/user/index.js';
+import { isOssEnabled, proxyUploadToOss } from '../../services/ossService.js';
 import { addDailyBytes } from '../../middleware/uploadGuard.js';
+import { transcodeToHls, generateM3u8 } from '../../services/hlsService.js';
 import { success, fail } from '../../utils/response.js';
 import { broadcast } from '../ws/registry.js';
 
 // ─── 本地存储配置（仅 isOssEnabled() === false 时使用）────────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const uploadsDir = path.resolve(__dirname, '../../../uploads');
-
-/**
- * 将 objectKey 转换为本地模式的播放 URL（仅供本地模式使用）。
- * COS 模式下播放 URL 由 getSignedUrl() 实时生成，不走此函数。
- */
-function toLocalPlayUrl(objectKey: string): string {
-  // objectKey 格式：cowatch/{roomId}/{uuid}-{fileName}
-  // 本地静态文件服务挂载在 /uploads，因此拼接为 /uploads/{objectKey}
-  return `/uploads/${objectKey}`;
-}
 
 export const RoomsController = {
 
@@ -81,17 +71,12 @@ export const RoomsController = {
 
     joinRoom(userId, roomId, false);
 
-    // 仅返回 roomId 供前端跳转，播放状态由 WS ROOM_STATE 下发，无需在此返回
     success(res, { roomId });
   },
 
   /**
    * GET /api/rooms/:roomId
    * 获取房间信息（含成员列表）
-   *
-   * rooms.video_url 存的是 objectKey，不是可播放 URL。
-   * 此处以 activeObjectKey 字段返回，语义明确。
-   * 前端不得将此值直接用于 <video src>，播放 URL 必须由 WS ROOM_STATE 下发（含签名）。
    */
   async getInfo(req: Request, res: Response): Promise<void> {
     const { roomId } = req.params;
@@ -102,10 +87,9 @@ export const RoomsController = {
     success(res, {
       roomId: room.id,
       roomName: room.name,
-      activeObjectKey: room.video_url,  // objectKey，不是播放 URL
+      activeObjectKey: room.video_url,
       controlMode: room.control_mode,
       controllerId: room.controller_id,
-      // is_online 字段已废弃：在房间即在线，WS 断线时从列表移除，DB 不维护在线态
       members: members.map((m) => ({
         userId: m.user_id,
         nickname: m.nickname,
@@ -127,12 +111,6 @@ export const RoomsController = {
   /**
    * GET /api/rooms/:roomId/videos
    * 获取房间内所有视频列表
-   *
-   * room_videos.video_url 存储的是 objectKey。
-   * 此接口仅用于前端初始化视频列表（展示文件名、排序等），
-   * 不在此处签名——播放 URL 在用户切换视频时由 WS SWITCH_VIDEO 广播实时签名下发。
-   * 前端收到视频列表后，videoUrl 字段即为 objectKey，
-   * 点击播放时发送 SWITCH_VIDEO 消息，后端签名后广播给所有成员。
    */
   async listVideos(req: Request, res: Response): Promise<void> {
     const { roomId } = req.params;
@@ -143,10 +121,11 @@ export const RoomsController = {
     success(res, {
       videos: videos.map((v) => ({
         id: v.id,
-        objectKey: v.video_url,   // 语义明确：返回 objectKey，不是播放 URL
+        objectKey: v.video_url,
         fileName: v.file_name,
         uploaderId: v.uploader_id,
         createdAt: v.created_at,
+        hlsStatus: v.hls_status,
       })),
     });
   },
@@ -181,27 +160,16 @@ export const RoomsController = {
   /**
    * GET /api/rooms/:roomId/upload-url
    *
-   * 根据用户白名单状态返回不同上传模式：
+   * 废弃白名单直传分支，所有 OSS 模式统一返回 mode: 'proxy'。
    *
    * - 本地开发模式（isOssEnabled() === false）：
    *     mode: 'local'，前端直传到后端本地
    *
-   * - OSS 模式 + 白名单用户：
-   *     mode: undefined（默认 OSS 直传）
-   *     返回预签名 PUT URL，前端直接 PUT 到 OSS，无需经过后端
-   *
-   * - OSS 模式 + 非白名单用户：
-   *     mode: 'proxy'
-   *     返回后端代理上传接口地址，文件经后端中转写入 OSS
-   *
-   * 返回字段：
-   *   - uploadUrl：上传目标地址
-   *   - objectKey：视频的唯一标识（前端上传完成后须原样回传给 confirm 接口）
-   *   - fileName：原始文件名
+   * - OSS 模式（无论是否白名单）：
+   *     mode: 'proxy'，文件经后端中转写入 OSS，后端负责切片
    */
   async getUploadUrl(req: Request, res: Response): Promise<void> {
     const { roomId } = req.params;
-    const userId = req.userId!;
     const { fileName, fileType } = req.query as Record<string, string>;
 
     if (!fileName || !fileType) { fail(res, 400, '缺少 fileName 或 fileType 参数'); return; }
@@ -210,28 +178,14 @@ export const RoomsController = {
     if (!room) { fail(res, 404, '房间不存在'); return; }
 
     if (isOssEnabled()) {
-      try {
-        const objectKey = `cowatch/${roomId}/${uuidv4()}-${fileName}`;
-
-        if (isUploadWhitelisted(userId)) {
-          // 白名单用户：COS 直传，返回预签名 PUT URL
-          const uploadUrl = await getUploadUrl(objectKey, fileType);
-          success(res, { uploadUrl, objectKey, fileName });
-        } else {
-          // 非白名单用户：后端中转，返回代理上传地址
-          success(res, {
-            uploadUrl: `/api/rooms/${roomId}/upload-proxy?objectKey=${encodeURIComponent(objectKey)}&fileType=${encodeURIComponent(fileType)}&fileName=${encodeURIComponent(fileName)}`,
-            objectKey,
-            fileName,
-            mode: 'proxy',
-          });
-        }
-      } catch (err) {
-        console.error('[getUploadUrl/oss]', err);
-        fail(res, 500, '获取上传地址失败');
-      }
+      const objectKey = `cowatch/${roomId}/${uuidv4()}-${fileName}`;
+      success(res, {
+        uploadUrl: `/api/rooms/${roomId}/upload-proxy?objectKey=${encodeURIComponent(objectKey)}&fileType=${encodeURIComponent(fileType)}&fileName=${encodeURIComponent(fileName)}`,
+        objectKey,
+        fileName,
+        mode: 'proxy',
+      });
     } else {
-      // 本地模式：objectKey 格式与 COS 保持一致，确保 SW 路径判断统一
       const objectKey = `cowatch/${roomId}/${uuidv4()}-${fileName}`;
       success(res, {
         uploadUrl: `/api/rooms/${roomId}/upload?objectKey=${encodeURIComponent(objectKey)}&fileName=${encodeURIComponent(fileName)}`,
@@ -244,13 +198,14 @@ export const RoomsController = {
 
   /**
    * POST /api/rooms/:roomId/upload-proxy
-   * 非白名单用户专用：后端接收文件流并代理上传到 COS
+   * 后端接收文件流并代理上传到 COS，完成后异步触发 HLS 切片。
    *
    * 流程：
    *   1. uploadGuard 中间件已完成 Sec-Fetch 校验 + 每日流量预检
    *   2. 此处将 req 可读流直接 pipe 给 COS putStream，零临时文件
-   *   3. 上传成功后，将实际写入字节数计入当日用量（addDailyBytes）
-   *   4. 写入 room_videos（存 objectKey）并广播 VIDEO_ADDED（含实时签名的播放 URL）
+   *   3. 上传成功后，将实际写入字节数计入当日用量
+   *   4. 写入 room_videos（hls_status: 'pending'），立即返回 200
+   *   5. 异步执行 ffmpeg 切片，切片完成后广播 VIDEO_ADDED（含 m3u8ObjectKey）
    */
   async proxyUpload(req: Request, res: Response): Promise<void> {
     const { roomId } = req.params;
@@ -271,28 +226,52 @@ export const RoomsController = {
       const realBytes = parseInt(req.headers['content-length'] ?? '0', 10);
       if (realBytes > 0) addDailyBytes(userId, realBytes);
 
-      // 存 objectKey 到 room_videos
-      // 注意：不调用 setVideoUrl——上传完成不代表用户激活该视频，
-      // 激活由用户点击播放触发 SWITCH_VIDEO WS 消息后后端更新。
+      // 写入 room_videos（hls_status 默认为 'pending'）
       const videoId = uuidv4();
       const video = addRoomVideo(videoId, roomId, objectKey, fileName, userId);
 
-      // 广播时实时签名（有效期 30 分钟，从上传完成时刻起算）
-      const signedUrl = await getSignedUrl(objectKey);
-      broadcast(roomId, {
-        type: 'VIDEO_ADDED',
-        data: {
-          id: video.id,
-          objectKey,
-          videoUrl: signedUrl,
-          fileName: video.file_name,
-          uploaderId: video.uploader_id,
-          createdAt: video.created_at,
-        },
-      });
+      // 立即响应前端，切片在后台异步进行
+      success(res, { objectKey, videoId: video.id });
 
-      console.log(`[proxyUpload] userId=${userId} roomId=${roomId} bytes=${realBytes} objectKey=${objectKey}`);
-      success(res, { objectKey });
+      // 切片目录前缀：cowatch/{roomId}/{videoId}/
+      const hlsPrefix = `cowatch/${roomId}/${videoId}/`;
+
+      console.log(`[proxyUpload] 开始异步切片：videoId=${videoId} objectKey=${objectKey}`);
+
+      // 异步切片，切片完成后广播 VIDEO_ADDED
+      void transcodeToHls(
+        videoId,
+        objectKey,
+        hlsPrefix,
+        () => {
+          // 切片成功：广播 VIDEO_ADDED，videoUrl 为 m3u8 API 路径
+          broadcast(roomId, {
+            type: 'VIDEO_ADDED',
+            data: {
+              id: video.id,
+              objectKey,
+              m3u8ObjectKey: hlsPrefix,
+              videoUrl: `/api/rooms/${roomId}/videos/${videoId}/m3u8`,
+              fileName: video.file_name,
+              uploaderId: video.uploader_id,
+              createdAt: video.created_at,
+            },
+          });
+          console.log(`[proxyUpload] 切片完成，已广播 VIDEO_ADDED：videoId=${videoId}`);
+        },
+        (err) => {
+          console.error(`[proxyUpload] 切片失败：videoId=${videoId}`, err.message);
+          // 切片失败：广播错误通知（可选），让前端提示用户
+          broadcast(roomId, {
+            type: 'VIDEO_SLICE_ERROR',
+            data: {
+              videoId: video.id,
+              fileName: video.file_name,
+              message: '视频切片处理失败，请重新上传',
+            },
+          });
+        },
+      );
     } catch (err) {
       console.error('[proxyUpload]', err);
       fail(res, 500, '代理上传失败');
@@ -301,10 +280,8 @@ export const RoomsController = {
 
   /**
    * PUT /api/rooms/:roomId/upload
-   * 本地模式专用：接收前端直传的视频文件，写入 uploads/{objectKey}
-   *
-   * objectKey 格式：cowatch/{roomId}/{uuid}-{fileName}（与 COS 模式对齐）
-   * 本地访问路径：/uploads/{objectKey}
+   * 本地模式专用：接收前端直传的视频文件，写入 uploads/{objectKey}，
+   * 完成后异步触发 HLS 切片。
    */
   uploadLocal(req: Request, res: Response): void {
     const { roomId } = req.params;
@@ -316,7 +293,6 @@ export const RoomsController = {
     const objectKey = (req.query.objectKey as string) || `cowatch/${roomId}/${uuidv4()}.mp4`;
     const rawName = (req.query.fileName as string) || 'video.mp4';
 
-    // 本地存储路径与 objectKey 对齐：uploads/cowatch/{roomId}/{uuid}-{fileName}
     const filePath = path.join(uploadsDir, objectKey);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
 
@@ -325,24 +301,47 @@ export const RoomsController = {
 
     writeStream.on('finish', () => {
       const videoId = uuidv4();
-      // 存 objectKey 到 room_videos（与 COS 模式一致）
-      // 注意：不调用 setVideoUrl——上传完成不代表用户激活该视频。
       const video = addRoomVideo(videoId, roomId, objectKey, rawName, userId);
 
-      const localPlayUrl = toLocalPlayUrl(objectKey);
+      // 立即响应前端
+      success(res, { objectKey, videoId: video.id });
 
-      broadcast(roomId, {
-        type: 'VIDEO_ADDED',
-        data: {
-          id: video.id,
-          objectKey,
-          videoUrl: localPlayUrl,
-          fileName: video.file_name,
-          uploaderId: video.uploader_id,
-          createdAt: video.created_at,
+      const hlsPrefix = `cowatch/${roomId}/${videoId}/`;
+
+      console.log(`[uploadLocal] 开始异步切片：videoId=${videoId} objectKey=${objectKey}`);
+
+      void transcodeToHls(
+        videoId,
+        objectKey,
+        hlsPrefix,
+        () => {
+          broadcast(roomId, {
+            type: 'VIDEO_ADDED',
+            data: {
+              id: video.id,
+              objectKey,
+              m3u8ObjectKey: hlsPrefix,
+              videoUrl: `/api/rooms/${roomId}/videos/${videoId}/m3u8`,
+              fileName: video.file_name,
+              uploaderId: video.uploader_id,
+              createdAt: video.created_at,
+            },
+          });
+          console.log(`[uploadLocal] 切片完成，已广播 VIDEO_ADDED：videoId=${videoId}`);
         },
-      });
-      success(res, { objectKey });
+        (err) => {
+          console.error(`[uploadLocal] 切片失败：videoId=${videoId}`, err.message);
+          broadcast(roomId, {
+            type: 'VIDEO_SLICE_ERROR',
+            data: {
+              videoId: video.id,
+              fileName: video.file_name,
+              message: '视频切片处理失败，请重新上传',
+            },
+          });
+        },
+        uploadsDir,
+      );
     });
 
     writeStream.on('error', (err) => {
@@ -352,40 +351,29 @@ export const RoomsController = {
   },
 
   /**
-   * PUT /api/rooms/:roomId/video
-   * 白名单用户 COS 直传完成后调用此接口确认。
+   * GET /api/rooms/:roomId/videos/:videoId/m3u8
+   * 动态生成带签名 URL 的 m3u8 内容并返回。
    *
-   * body.objectKey：前端从 getUploadUrl 拿到的 objectKey，原样回传
-   * 后端将 objectKey 存入 room_videos，并广播带实时签名的 VIDEO_ADDED。
+   * 每次请求实时生成，片段签名有效期 2 小时。
+   * 跨天复盘场景：前端重新请求此接口即可刷新签名，SW 缓存的 .ts 片段不受影响。
    */
-  async setVideo(req: Request, res: Response): Promise<void> {
-    const { roomId } = req.params;
-    const userId = req.userId!;
-    const { objectKey, fileName } = req.body as { objectKey?: string; fileName?: string };
+  async getVideoM3u8(req: Request, res: Response): Promise<void> {
+    const { videoId } = req.params;
 
-    if (!objectKey || typeof objectKey !== 'string') { fail(res, 400, '缺少 objectKey'); return; }
-
-    const room = getRoomById(roomId);
-    if (!room) { fail(res, 404, '房间不存在'); return; }
-
-    const videoId = uuidv4();
-    const resolvedFileName = fileName || objectKey.split('/').pop() || 'video.mp4';
-    // 注意：不调用 setVideoUrl——上传完成不代表用户激活该视频。
-    const video = addRoomVideo(videoId, roomId, objectKey, resolvedFileName, userId);
-
-    // 广播时实时签名（有效期 30 分钟，从确认时刻起算）
-    const signedUrl = await getSignedUrl(objectKey);
-    broadcast(roomId, {
-      type: 'VIDEO_ADDED',
-      data: {
-        id: video.id,
-        objectKey,
-        videoUrl: signedUrl,
-        fileName: video.file_name,
-        uploaderId: video.uploader_id,
-        createdAt: video.created_at,
-      },
-    });
-    success(res, { objectKey });
+    try {
+      const m3u8Content = await generateM3u8(videoId, uploadsDir);
+      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+      res.send(m3u8Content);
+    } catch (err) {
+      const error = err as NodeJS.ErrnoException;
+      if (error.code === '404') {
+        fail(res, 404, error.message);
+      } else if (error.code === '425') {
+        fail(res, 425, error.message);
+      } else {
+        console.error('[getVideoM3u8]', err);
+        fail(res, 500, '生成 m3u8 失败');
+      }
+    }
   },
 };

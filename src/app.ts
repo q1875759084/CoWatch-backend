@@ -10,6 +10,16 @@ import routes from './routes/index.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { initWsServer } from './ws/wsServer.js';
 
+// ─── 全局兜底：防止未捕获异常 / Promise rejection 导致进程崩溃 ────────────────
+// 主要场景：ffmpeg 切片、WS send 等异步后台任务抛出未预期错误时，
+// 不加此兜底会直接终止进程并断开所有 WS 连接（code=1006）。
+process.on('uncaughtException', (err) => {
+  console.error('[process] uncaughtException（已捕获，进程继续运行）:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[process] unhandledRejection（已捕获，进程继续运行）:', reason);
+});
+
 // ─── 数据库初始化（启动时执行，幂等）────────────────────────────────────────
 initSchema();
 
@@ -41,7 +51,7 @@ app.use('/uploads', express.static(uploadsDir, {
   // 无法写入 Cache Storage、缓存永远为空。
   // 视频缓存由 SW（Cache Storage）负责，HTTP 缓存层应退出，避免两层缓存冲突。
   setHeaders(res, filePath) {
-    if (filePath.endsWith('.mp4')) {
+    if (filePath.endsWith('.mp4') || filePath.endsWith('.ts')) {
       res.setHeader('Cache-Control', 'no-store');
     }
   },

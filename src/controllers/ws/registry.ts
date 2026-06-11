@@ -25,6 +25,18 @@ export function getClients(roomId: string): Map<string, WebSocket> {
 }
 
 /**
+ * 安全发送：捕获 ws.send() 可能抛出的同步异常（如连接已关闭但 readyState 尚未更新），
+ * 防止单个连接异常传播到调用栈导致进程崩溃。
+ */
+function safeSend(ws: WebSocket, payload: string): void {
+  try {
+    ws.send(payload);
+  } catch (err) {
+    console.warn('[WS] send 失败（连接可能已关闭）:', (err as Error).message);
+  }
+}
+
+/**
  * 广播消息给房间内所有人（含发送者）
  */
 export function broadcast(roomId: string, message: object): void {
@@ -32,7 +44,7 @@ export function broadcast(roomId: string, message: object): void {
   const payload = JSON.stringify(message);
   clients.forEach((ws) => {
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(payload);
+      safeSend(ws, payload);
     }
   });
 }
@@ -45,7 +57,7 @@ export function broadcastExcept(roomId: string, excludeUserId: string, message: 
   const payload = JSON.stringify(message);
   clients.forEach((ws, userId) => {
     if (userId !== excludeUserId && ws.readyState === WebSocket.OPEN) {
-      ws.send(payload);
+      safeSend(ws, payload);
     }
   });
 }
@@ -56,6 +68,6 @@ export function broadcastExcept(roomId: string, excludeUserId: string, message: 
 export function sendToClient(roomId: string, userId: string, message: object): void {
   const ws = getClients(roomId).get(userId);
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(message));
+    safeSend(ws, JSON.stringify(message));
   }
 }

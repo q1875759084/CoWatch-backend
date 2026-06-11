@@ -1,11 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
-import { isUploadWhitelisted } from '../database/user/index.js';
 import { fail } from '../utils/response.js';
 
 /**
  * 视频上传防护中间件
  *
- * 挂载在 POST /api/rooms/:roomId/upload-proxy 接口上（非白名单用户走后端中转时）。
+ * 挂载在 POST /api/rooms/:roomId/upload-proxy 接口上（所有用户统一走后端中转）。
  * 执行以下两层校验：
  *
  * 1. Sec-Fetch 请求头校验
@@ -15,10 +14,9 @@ import { fail } from '../utils/response.js';
  *    定位是"增加尝试成本"而非"完全防御"。
  *
  * 2. 每日上传总字节数限制
- *    非白名单用户每日中转上传的总字节数不得超过 DAILY_BYTES_LIMIT（默认 5 GB）。
+ *    每个用户每日中转上传的总字节数不得超过 DAILY_BYTES_LIMIT（默认 5 GB）。
  *    此处仅校验"当日已用量 + 本次 Content-Length 是否超限"。
  *    实际字节计数在 proxyUpload handler 中真实写入完成后更新，防止恶意多请求占用配额。
- *    白名单用户（users.is_upload_whitelist = 1）走 COS 直传，不经过此中间件。
  *    计数器存内存 Map，服务重启自动清零，日期变更自动重置。
  */
 

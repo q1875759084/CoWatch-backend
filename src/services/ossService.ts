@@ -1,5 +1,6 @@
 import { Readable } from 'stream';
 import { createHash } from 'crypto';
+import fs from 'fs';
 import COS from 'cos-nodejs-sdk-v5';
 
 /**
@@ -163,6 +164,77 @@ export function getSignedUrl(
         } else {
           resolve(data.Url);
         }
+      },
+    );
+  });
+}
+
+// ─── HLS 切片相关 ──────────────────────────────────────────────────────────────
+
+/**
+ * 上传单个 HLS .ts 片段到 COS
+ *
+ * @param objectKey  目标 COS 对象键，如 cowatch/{roomId}/{uuid}/seg000.ts
+ * @param filePath   本地临时文件绝对路径
+ * @returns          objectKey（同入参，方便链式调用）
+ */
+export async function uploadHlsSegment(
+  objectKey: string,
+  filePath: string,
+): Promise<string> {
+  const fileStream = fs.createReadStream(filePath);
+  await new Promise<void>((resolve, reject) => {
+    getClient().putObject(
+      {
+        Bucket: process.env.COS_BUCKET!,
+        Region: process.env.COS_REGION!,
+        Key: objectKey,
+        ContentType: 'video/MP2T',
+        Body: fileStream,
+      },
+      (err) => {
+        if (err) reject(err);
+        else resolve();
+      },
+    );
+  });
+  return objectKey;
+}
+
+/**
+ * 生成 HLS .ts 片段的带时效签名 GET URL
+ *
+ * 默认有效期 2 小时（覆盖复盘 session，跨天刷新时重新请求 m3u8 接口）。
+ * 逻辑与 getSignedUrl 完全相同，仅默认有效期不同。
+ */
+export function getHlsSegmentSignedUrl(
+  objectKey: string,
+  expireSeconds = 2 * 3600,
+): Promise<string> {
+  return getSignedUrl(objectKey, expireSeconds);
+}
+
+/**
+ * 列举 COS 某前缀下所有 .ts 文件（用于 generateM3u8 动态拼装）
+ *
+ * 返回按文件名升序排列的 objectKey 列表（seg000.ts, seg001.ts, ...）
+ */
+export async function listHlsSegments(hlsPrefix: string): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    getClient().getBucket(
+      {
+        Bucket: process.env.COS_BUCKET!,
+        Region: process.env.COS_REGION!,
+        Prefix: hlsPrefix,
+        MaxKeys: 1000,
+      },
+      (err, data) => {
+        if (err) { reject(err); return; }
+        const keys = (data.Contents ?? [])
+          .map((item: { Key: string }) => item.Key)
+          .filter((key: string) => key.endsWith('.ts'))
+          .sort(); // seg000.ts < seg001.ts ... 按字典序升序
+        resolve(keys);
       },
     );
   });

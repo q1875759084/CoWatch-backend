@@ -1,0 +1,6 @@
+{
+  "watch": ["src"],
+  "ext": "ts,js,json",
+  "ignore": ["uploads/**", "database/**", "dist/**"],
+  "exec": "tsx src/app.ts"
+}

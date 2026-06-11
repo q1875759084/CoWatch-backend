@@ -7,6 +7,8 @@ export interface RoomVideoRow {
   file_name: string;
   uploader_id: string;
   created_at: number;
+  hls_prefix: string | null;
+  hls_status: 'pending' | 'done' | 'error';
 }
 
 /**
@@ -48,4 +50,25 @@ export function getVideosByRoom(roomId: string): RoomVideoRow[] {
   return db.prepare(`
     SELECT * FROM room_videos WHERE room_id = ? ORDER BY created_at ASC
   `).all(roomId) as RoomVideoRow[];
+}
+
+/**
+ * 更新视频的 HLS 切片状态和前缀
+ */
+export function updateHlsStatus(
+  videoId: string,
+  hlsPrefix: string,
+  status: 'pending' | 'done' | 'error',
+): void {
+  db.prepare(`
+    UPDATE room_videos SET hls_prefix = ?, hls_status = ? WHERE id = ?
+  `).run(hlsPrefix, status, videoId);
+}
+
+/**
+ * 通过 objectKey（video_url 字段）反查视频 id（用于 wsServer SWITCH_VIDEO）
+ */
+export function getVideoIdByObjectKey(objectKey: string): string | null {
+  const row = db.prepare('SELECT id FROM room_videos WHERE video_url = ? ORDER BY created_at DESC LIMIT 1').get(objectKey) as { id: string } | undefined;
+  return row?.id ?? null;
 }

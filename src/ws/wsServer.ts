@@ -5,11 +5,10 @@ import { URL } from 'url';
 import { verifyToken } from '../utils/jwt.js';
 import { getRoomMember, getAdminByRoom, getMembersByRoom } from '../database/roomMember/index.js';
 import { getRoomById, setControllerId, setVideoUrl } from '../database/room/index.js';
-import { getVideosByRoom } from '../database/roomVideo/index.js';
+import { getVideosByRoom, getVideoIdByObjectKey } from '../database/roomVideo/index.js';
 import { addTag, deleteTag } from '../database/tag/index.js';
 import { getUserById } from '../database/user/index.js';
 import { addClient, removeClient, broadcast, broadcastExcept, sendToClient } from '../controllers/ws/registry.js';
-import { getSignedUrl, isOssEnabled } from '../services/ossService.js';
 
 interface WsMessage {
   type: string;
@@ -38,15 +37,16 @@ function nextSeq(roomId: string): number {
 }
 
 /**
- * 将 objectKey 转换为播放 URL。
- *   - COS 模式：生成 30 分钟时效签名 URL
- *   - 本地模式：拼接为 /uploads/{objectKey}
+ * 将 objectKey 转换为 m3u8 API 路径。
+ *
+ * HLS 架构下，前端不直接播放 mp4，而是通过后端动态生成的 m3u8 加载。
+ * 返回格式：/api/rooms/{roomId}/videos/{videoId}/m3u8
+ * 若找不到对应 videoId（数据异常），返回 null。
  */
-async function toPlayUrl(objectKey: string): Promise<string> {
-  if (isOssEnabled()) {
-    return getSignedUrl(objectKey);
-  }
-  return `/uploads/${objectKey}`;
+function toPlayUrl(roomId: string, objectKey: string): string | null {
+  const videoId = getVideoIdByObjectKey(objectKey);
+  if (!videoId) return null;
+  return `/api/rooms/${roomId}/videos/${videoId}/m3u8`;
 }
 
 /**
@@ -106,39 +106,39 @@ export function initWsServer(httpServer: Server): WebSocketServer {
     const currentMembers = getMembersByRoom(roomId);
     const playback = roomPlayback.get(roomId) ?? { isPlaying: false, currentTime: 0 };
 
-    // 若当前房间已有激活视频（objectKey 存储在 room.video_url），实时签名后告知新成员
+    // 若当前房间已有激活视频，生成 m3u8 API 路径告知新成员
     const activeObjectKey = room.video_url ?? null;
-    void (activeObjectKey ? toPlayUrl(activeObjectKey) : Promise.resolve(null)).then((signedUrl) => {
-      sendToClient(roomId, userId, {
-        type: 'ROOM_STATE',
-        data: {
-          // 若有激活视频，下发签名 URL；否则为 null（进房间时尚无人播放）
-          videoUrl: signedUrl,
-          activeObjectKey,
-          controlMode: room.control_mode,
-          controllerId: room.controller_id,
-          // 下发当前播放状态，新加入成员可直接同步
-          isPlaying: playback.isPlaying,
-          currentTime: playback.currentTime,
-          // 视频列表只含 objectKey，videoUrl 为 null（播放时按需签名）
-          videos: existingVideos.map((v) => ({
-            id: v.id,
-            objectKey: v.video_url,
-            videoUrl: null,
-            fileName: v.file_name,
-            uploaderId: v.uploader_id,
-            createdAt: v.created_at,
-          })),
-          // 下发当前房间内所有成员
-          members: currentMembers.map((m) => ({
-            userId: m.user_id,
-            nickname: m.nickname,
-            isAdmin: m.is_admin === 1,
-          })),
-          // tags 不随 ROOM_STATE 下发（点击播放后按需拉取）
-          tags: [],
-        },
-      });
+    const currentVideoUrl = activeObjectKey ? toPlayUrl(roomId, activeObjectKey) : null;
+    sendToClient(roomId, userId, {
+      type: 'ROOM_STATE',
+      data: {
+        // 若有激活视频，下发 m3u8 API 路径；否则为 null（进房间时尚无人播放）
+        videoUrl: currentVideoUrl,
+        activeObjectKey,
+        controlMode: room.control_mode,
+        controllerId: room.controller_id,
+        // 下发当前播放状态，新加入成员可直接同步
+        isPlaying: playback.isPlaying,
+        currentTime: playback.currentTime,
+        // 视频列表含 objectKey 和 hlsStatus，videoUrl 为 null（切换视频后才有值）
+        videos: existingVideos.map((v) => ({
+          id: v.id,
+          objectKey: v.video_url,
+          videoUrl: null,
+          fileName: v.file_name,
+          uploaderId: v.uploader_id,
+          createdAt: v.created_at,
+          hlsStatus: v.hls_status,
+        })),
+        // 下发当前房间内所有成员
+        members: currentMembers.map((m) => ({
+          userId: m.user_id,
+          nickname: m.nickname,
+          isAdmin: m.is_admin === 1,
+        })),
+        // tags 不随 ROOM_STATE 下发（点击播放后按需拉取）
+        tags: [],
+      },
     });
 
     console.log(`[WS] ${nickname}(${userId}) joined room ${roomId}`);
@@ -240,27 +240,30 @@ export function initWsServer(httpServer: Server): WebSocketServer {
 
         case 'SWITCH_VIDEO': {
           /**
-           * 方案 B：前端发送 objectKey，后端实时签名后广播带签名 videoUrl 的消息。
-           *
-           * 签名在"切换时刻"生成，有效期 30 分钟从此时起算。
+           * HLS 架构：前端发送 objectKey，后端查找对应 videoId，
+           * 广播 m3u8 API 路径（/api/rooms/{roomId}/videos/{videoId}/m3u8）。
+           * 前端收到后请求此接口获取实时签名的 m3u8 内容，再通过 hls.js 播放。
            * 仅主控（controller）可以切换视频。
            */
           if (!canControl(userId, latestRoom)) return;
           const objectKey = msg.data?.objectKey as string | undefined;
-          const videoId = msg.data?.videoId as string | undefined;
+          const msgVideoId = msg.data?.videoId as string | undefined;
           if (!objectKey) return;
 
           // 更新 rooms.video_url 为当前激活视频的 objectKey
           setVideoUrl(roomId, objectKey);
 
-          // 异步签名后广播（ws.on('message') 不支持 async，用 void + Promise）
-          void toPlayUrl(objectKey).then((signedUrl) => {
-            broadcast(roomId, {
-              type: 'SWITCH_VIDEO',
-              data: { objectKey, videoUrl: signedUrl, videoId },
-            });
-          }).catch((err) => {
-            console.error('[WS] SWITCH_VIDEO 签名失败:', err);
+          // 查出 videoId（优先用前端传来的，否则从 DB 查）
+          const resolvedVideoId = msgVideoId ?? getVideoIdByObjectKey(objectKey);
+          if (!resolvedVideoId) {
+            console.error('[WS] SWITCH_VIDEO：找不到 videoId for objectKey:', objectKey);
+            return;
+          }
+
+          const m3u8Url = `/api/rooms/${roomId}/videos/${resolvedVideoId}/m3u8`;
+          broadcast(roomId, {
+            type: 'SWITCH_VIDEO',
+            data: { objectKey, videoUrl: m3u8Url, videoId: resolvedVideoId },
           });
           break;
         }
