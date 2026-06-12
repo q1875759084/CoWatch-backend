@@ -3,9 +3,7 @@
  *
  * 启动：node compress-test.mjs
  * 然后打开 http://localhost:4000 选择视频上传
- * 会同时生成两份（目标 ~1/3 原始体积，供开发测试用）：
- *   720p-30fps CRF 36（dev-small）
- *   720p-30fps CRF 38（dev-min）
+ * 生成一份测试文件（720p 30fps CRF 38，加关键帧参数）
  * 输出到脚本同目录下的 compress-output/ 文件夹
  */
 
@@ -41,8 +39,7 @@ const PAGE_HTML = `<!DOCTYPE html>
 </head>
 <body>
 <h2>CoWatch 本地转码测试</h2>
-<p class="hint">上传后会依次输出两份（目标 ~1/3 原始体积，720p 30fps）：<br>
-① 720p CRF 36（dev-small）② 720p CRF 38（dev-min）<br>
+<p class="hint">上传后输出一份（720p 30fps CRF 38，加 -g 120 关键帧参数）。<br>
 输出到 <code>compress-output/</code> 目录，转码期间页面请勿关闭。</p>
 
 <input type="file" id="file" accept="video/*">
@@ -123,7 +120,6 @@ function runFfmpeg(inputPath, outputPath, crf) {
   return new Promise((resolve, reject) => {
     const args = [
       '-i', inputPath,
-      // 缩放到 720p（保持宽高比），帧率降到 30fps
       '-vf', 'scale=-2:720',
       '-r', '30',
       '-c:v', 'libx264',
@@ -132,6 +128,10 @@ function runFfmpeg(inputPath, outputPath, crf) {
       '-c:a', 'aac',
       '-b:a', '96k',
       '-movflags', '+faststart',
+      // 强制关键帧间隔 2s（60fps→120帧），确保后端 -c copy 切片可在 10s 内找到关键帧
+      '-g', '120',
+      '-keyint_min', '120',
+      '-sc_threshold', '0',
       '-y',
       outputPath,
     ];
@@ -174,8 +174,7 @@ const server = http.createServer(async (req, res) => {
 
       const baseName = path.basename(originalName, path.extname(originalName));
       const presets = [
-        { preset: 'dev-small', crf: 36 },
-        { preset: 'dev-min',   crf: 38 },
+        { preset: 'dev-min', crf: 38 },
       ];
 
       // 串行转码（避免并行占满 CPU）
