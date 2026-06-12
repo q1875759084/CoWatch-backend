@@ -6,7 +6,7 @@
   "main": "dist/app.js",
   "scripts": {
     "dev": "nodemon",
-    "build": "rimraf dist && tsc",
+    "build": "rimraf dist && tsc && cp -r src/assets dist/assets",
     "start": "node dist/app.js",
     "type-check": "tsc --noEmit",
     "db:reset": "rimraf database/cowatch.sqlite3 database/cowatch.sqlite3-shm database/cowatch.sqlite3-wal uploads/cowatch && echo '✅ 数据库 + HLS 切片已清空，重启后端后自动重建'"

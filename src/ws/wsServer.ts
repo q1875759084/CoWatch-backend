@@ -268,6 +268,31 @@ export function initWsServer(httpServer: Server): WebSocketServer {
           break;
         }
 
+        case 'CURSOR_MOVE': {
+          /**
+           * 鼠标移动：透传给房间内其他成员（不含发送者自身）。
+           * 不落库，纯内存转发；后端补充 userId/nickname 让接收方无需额外查询。
+           */
+          const { x, y, styleId } = (msg.data ?? {}) as Record<string, unknown>;
+          if (typeof x !== 'number' || typeof y !== 'number' || typeof styleId !== 'string') return;
+          broadcastExcept(roomId, userId, {
+            type: 'CURSOR_MOVE',
+            data: { userId, nickname, x, y, styleId },
+          });
+          break;
+        }
+
+        case 'CURSOR_HIDE': {
+          /**
+           * 鼠标离开区域：通知其他成员隐藏该用户的光标。
+           */
+          broadcastExcept(roomId, userId, {
+            type: 'CURSOR_HIDE',
+            data: { userId },
+          });
+          break;
+        }
+
         default:
           console.warn(`[WS] 未知消息类型: ${msg.type}`);
       }

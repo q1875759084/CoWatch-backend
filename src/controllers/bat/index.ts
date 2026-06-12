@@ -1,10 +1,10 @@
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { Request, Response } from 'express';
 import { fail } from '../../utils/response.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const BAT_DIR = path.resolve(__dirname, '../../assets/bat');
+// process.cwd() 在 dev(tsx) 和 prod(node dist/) 下均指向项目根目录，
+// 比 import.meta.url + fileURLToPath 更稳定
+const BAT_DIR = path.resolve(process.cwd(), 'src/assets/bat');
 
 /** 合法的 CRF 数字档位 */
 const VALID_PRESETS = ['23', '26', '28', '30'] as const;
@@ -27,6 +27,7 @@ export const BatController = {
 
     res.setHeader('Content-Type', 'application/octet-stream');
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Cache-Control', 'no-store');
     res.sendFile(filePath, (err) => {
       if (err) {
         fail(res, 500, '脚本文件不存在，请联系管理员');

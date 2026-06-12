@@ -42,10 +42,13 @@ echo.
 ffmpeg -i "%INPUT%" ^
     -c:v libx264 ^
     -crf 30 ^
-    -preset fast ^
+    -preset veryfast ^
     -c:a aac ^
     -b:a 128k ^
     -movflags +faststart ^
+    -g 120 ^
+    -keyint_min 120 ^
+    -sc_threshold 0 ^
     "%OUTPUT%"
 
 if errorlevel 1 (
