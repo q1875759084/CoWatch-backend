@@ -293,6 +293,32 @@ export function initWsServer(httpServer: Server): WebSocketServer {
           break;
         }
 
+        case 'DRAW_STROKE': {
+          /**
+           * 绘制笔迹：将一段完整笔迹广播给房间内其他成员。
+           * 不落库，纯内存转发；后端补充 userId 让接收方知道是谁绘制的。
+           */
+          const { color, points } = (msg.data ?? {}) as Record<string, unknown>;
+          if (typeof color !== 'string' || !Array.isArray(points)) return;
+          broadcastExcept(roomId, userId, {
+            type: 'DRAW_STROKE',
+            data: { userId, color, points },
+          });
+          break;
+        }
+
+        case 'DRAW_CLEAR': {
+          /**
+           * 清空画布：广播给房间内其他成员（含发送者自身，确保全员同步清空）。
+           * 发送者本地已经清空了，broadcastExcept 只通知其他人。
+           */
+          broadcastExcept(roomId, userId, {
+            type: 'DRAW_CLEAR',
+            data: { userId },
+          });
+          break;
+        }
+
         default:
           console.warn(`[WS] 未知消息类型: ${msg.type}`);
       }
