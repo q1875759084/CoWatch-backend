@@ -91,6 +91,7 @@ export const RoomsController = {
       activeObjectKey: room.video_url,
       controlMode: room.control_mode,
       controllerId: room.controller_id,
+      // 在线状态不由 HTTP 返回，由 WS ROOM_STATE 负责。前端初始化时视所有成员为不在线。
       members: members.map((m) => ({
         userId: m.user_id,
         nickname: m.nickname,

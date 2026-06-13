@@ -4,7 +4,7 @@ export interface RoomMemberRow {
   user_id: string;
   room_id: string;
   is_admin: 0 | 1;
-  is_online: 0 | 1;
+  // is_online 已废弃：在线状态改由进程内 roomClients Map 维护，不再写 DB
   joined_at: number;
 }
 
@@ -14,8 +14,8 @@ export interface RoomMemberRow {
 export function joinRoom(userId: string, roomId: string, isAdmin: boolean): RoomMemberRow {
   const now = Date.now();
   db.prepare(`
-    INSERT INTO room_members (user_id, room_id, is_admin, is_online, joined_at)
-    VALUES (?, ?, ?, 0, ?)
+    INSERT INTO room_members (user_id, room_id, is_admin, joined_at)
+    VALUES (?, ?, ?, ?)
     ON CONFLICT(user_id, room_id) DO UPDATE SET joined_at = excluded.joined_at
   `).run(userId, roomId, isAdmin ? 1 : 0, now);
   return getRoomMember(userId, roomId)!;

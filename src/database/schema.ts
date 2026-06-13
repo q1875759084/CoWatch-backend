@@ -37,7 +37,6 @@ export function initSchema(): void {
       user_id   TEXT NOT NULL,
       room_id   TEXT NOT NULL,
       is_admin  INTEGER NOT NULL DEFAULT 0,
-      is_online INTEGER NOT NULL DEFAULT 0,
       joined_at INTEGER NOT NULL,
       PRIMARY KEY (user_id, room_id),
       FOREIGN KEY (user_id) REFERENCES users(id),
@@ -104,6 +103,9 @@ function runMigrations(): void {
       sql: "ALTER TABLE room_videos ADD COLUMN hls_status TEXT NOT NULL DEFAULT 'pending'",
       desc: 'room_videos.hls_status',
     },
+    // room_members.is_online 废弃：在线状态改为纯内存（roomClients Map）管理，
+    // 不再写 DB。SQLite < 3.35 不支持 DROP COLUMN，旧库中该列继续存在但永不读写。
+    // 新库通过上方 CREATE TABLE IF NOT EXISTS 建表时已不含该列。
   ];
 
   for (const { sql, desc } of migrations) {

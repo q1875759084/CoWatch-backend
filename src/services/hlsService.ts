@@ -121,7 +121,9 @@ export async function transcodeToHls(
     }
 
     // 3. 执行 ffmpeg 切片
+    const t0 = Date.now();
     await runFfmpeg(ffmpegInput, tmpDir);
+    const tFfmpeg = Date.now() - t0;
 
     // 4. 收集切片结果
     const tsFiles = fs.readdirSync(tmpDir)
@@ -132,14 +134,22 @@ export async function transcodeToHls(
       throw new Error('[hlsService] ffmpeg 未生成任何 .ts 片段，请检查输入文件格式');
     }
 
+    console.log(`[hlsService] ffmpeg 切片耗时 ${tFfmpeg}ms，共 ${tsFiles.length} 个片段`);
+
     if (isOssEnabled()) {
-      // 5a. COS 模式：逐个上传 .ts 文件到 COS（串行，避免带宽爆炸）
-      for (const tsFile of tsFiles) {
-        const localPath = path.join(tmpDir, tsFile);
-        const cosKey = `${hlsPrefix}${tsFile}`; // 如 cowatch/roomId/uuid/seg000.ts
-        await uploadHlsSegment(cosKey, localPath);
-        console.log(`[hlsService] 已上传片段: ${cosKey}`);
+      // 5a. COS 模式：并发上传 .ts 文件到 COS（并发数 5，兼顾速度与带宽）
+      const tUploadStart = Date.now();
+      const CONCURRENCY = 5;
+      for (let i = 0; i < tsFiles.length; i += CONCURRENCY) {
+        const batch = tsFiles.slice(i, i + CONCURRENCY);
+        await Promise.all(batch.map(async (tsFile) => {
+          const localPath = path.join(tmpDir, tsFile);
+          const cosKey = `${hlsPrefix}${tsFile}`;
+          await uploadHlsSegment(cosKey, localPath);
+          console.log(`[hlsService] 已上传片段: ${cosKey}`);
+        }));
       }
+      console.log(`[hlsService] COS 上传耗时 ${Date.now() - tUploadStart}ms`);
     } else {
       // 5b. 本地模式：将 .ts 文件移动到 uploads/{hlsPrefix} 目录
       if (!uploadsDir) throw new Error('[hlsService] 本地模式下 uploadsDir 不能为空');

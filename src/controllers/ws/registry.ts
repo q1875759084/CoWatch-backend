@@ -25,6 +25,14 @@ export function getClients(roomId: string): Map<string, WebSocket> {
 }
 
 /**
+ * 获取房间内当前在线的 userId 集合。
+ * 以进程内 WS 连接注册表为唯一权威，用于 ROOM_STATE 下发时拼接 isOnline 字段。
+ */
+export function getOnlineUserIds(roomId: string): Set<string> {
+  return new Set(roomClients.get(roomId)?.keys() ?? []);
+}
+
+/**
  * 安全发送：捕获 ws.send() 可能抛出的同步异常（如连接已关闭但 readyState 尚未更新），
  * 防止单个连接异常传播到调用栈导致进程崩溃。
  */

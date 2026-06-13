@@ -8,7 +8,7 @@ import { getRoomById, setControllerId, setVideoUrl } from '../database/room/inde
 import { getVideosByRoom, getVideoIdByObjectKey } from '../database/roomVideo/index.js';
 import { addTag, deleteTag } from '../database/tag/index.js';
 import { getUserById } from '../database/user/index.js';
-import { addClient, removeClient, broadcast, broadcastExcept, sendToClient } from '../controllers/ws/registry.js';
+import { addClient, removeClient, broadcast, broadcastExcept, sendToClient, getOnlineUserIds } from '../controllers/ws/registry.js';
 
 interface WsMessage {
   type: string;
@@ -110,13 +110,15 @@ export function initWsServer(httpServer: Server): WebSocketServer {
 
     broadcastExcept(roomId, userId, {
       type: 'MEMBER_JOINED',
-      data: { userId, nickname, isAdmin: member.is_admin === 1 },
+      data: { userId, nickname, isAdmin: member.is_admin === 1, isOnline: true },
     });
 
     // 进房间时视频列表只下发 objectKey，不签名。
     // 播放 URL 在用户点击播放（SWITCH_VIDEO）时由后端实时签名后广播。
     const existingVideos = getVideosByRoom(roomId);
     const currentMembers = getMembersByRoom(roomId);
+    // addClient 已在上方执行，所以 onlineIds 包含当前新加入的用户自己
+    const onlineIds = getOnlineUserIds(roomId);
     const playback = roomPlayback.get(roomId) ?? { isPlaying: false, currentTime: 0 };
 
     // 若当前房间已有激活视频，生成 m3u8 API 路径告知新成员
@@ -147,11 +149,12 @@ export function initWsServer(httpServer: Server): WebSocketServer {
           createdAt: v.created_at,
           hlsStatus: v.hls_status,
         })),
-        // 下发当前房间内所有成员
+        // 下发当前房间内所有成员（含在线状态）
         members: currentMembers.map((m) => ({
           userId: m.user_id,
           nickname: m.nickname,
           isAdmin: m.is_admin === 1,
+          isOnline: onlineIds.has(m.user_id),
         })),
         // tags 不随 ROOM_STATE 下发（点击播放后按需拉取）
         tags: [],
@@ -397,7 +400,9 @@ export function initWsServer(httpServer: Server): WebSocketServer {
         }
       }
 
-      broadcast(roomId, { type: 'MEMBER_LEFT', data: { userId } });
+      // MEMBER_OFFLINE：通知其他成员该用户已断线（仅标记离线，不从列表删除）
+      // MEMBER_LEFT 保留给未来退群/踢人功能
+      broadcast(roomId, { type: 'MEMBER_OFFLINE', data: { userId } });
       console.log(`[WS] ${nickname}(${userId}) left room ${roomId}`);
     });
 

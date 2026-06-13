@@ -15,13 +15,36 @@ export function isOssEnabled(): boolean {
 
 // ─── COS 客户端 ───────────────────────────────────────────────────────────────
 
+/**
+ * 内网加速依赖的地域
+ *
+ * COS SDK 的 Domain 模板硬编码为内网域名（cos-internal），
+ * 仅在服务器与 Bucket 同地域时可用。
+ * 若 COS_REGION 与此值不符，getClient() 会在首次初始化时打印警告，
+ * 方便在迁移地域时快速定位"内网请求失败"的根因。
+ */
+const COS_INTERNAL_REGION = 'ap-shanghai';
+
 let client: COS | null = null;
 
 function getClient(): COS {
   if (!client) {
+    const region = process.env.COS_REGION ?? '';
+    if (region !== COS_INTERNAL_REGION) {
+      console.warn(
+        `[ossService] ⚠️  COS_REGION="${region}" 与内网加速预期地域 "${COS_INTERNAL_REGION}" 不一致。` +
+        '内网域名（cos-internal）仅在同地域时可用，跨地域会导致上传/下载请求失败。' +
+        '如已迁移地域，请同步修改 ossService.ts 中的 COS_INTERNAL_REGION。',
+      );
+    } else {
+      console.log(`[ossService] COS 客户端初始化，地域=${region}，内网加速已启用`);
+    }
     client = new COS({
       SecretId: process.env.COS_SECRET_ID!,
       SecretKey: process.env.COS_SECRET_KEY!,
+      // 走腾讯云内网域名：服务器（上海）与 Bucket（上海）同地域，内网速度 ~500Mbps vs 公网 ~4Mbps
+      // 若迁移地域，需同步修改上方的 COS_INTERNAL_REGION 并确认服务器与 Bucket 同地域
+      Domain: '{Bucket}.cos-internal.{Region}.tencentcos.cn',
     });
   }
   return client;
