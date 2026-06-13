@@ -18,8 +18,10 @@ FROM node:20-alpine AS runner
 
 WORKDIR /app
 
-# better-sqlite3 原生 addon 在 alpine 上需要构建工具链
-# 装完生产依赖后删除 make/g++ 以控制镜像体积
+# ffmpeg：HLS 切片所需，保留在运行时镜像（-c copy 模式，无重编码，速度极快）
+RUN apk add --no-cache ffmpeg
+
+# better-sqlite3 原生 addon 需要构建工具链，装完生产依赖后删除以控制镜像体积
 RUN apk add --no-cache python3 make g++
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && apk del make g++

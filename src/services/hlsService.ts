@@ -2,7 +2,6 @@ import os from 'os';
 import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
-import ffmpegBin from 'ffmpeg-static';
 import { getRoomVideoById, updateHlsStatus } from '../database/roomVideo/index.js';
 import {
   isOssEnabled,
@@ -46,8 +45,9 @@ function runFfmpeg(inputPath: string, tmpDir: string): Promise<void> {
       m3u8Path,
     ];
 
-    // ffmpeg-static 返回 string | null，null 时降级到系统 PATH 中的 ffmpeg
-    const ffmpegPath: string = (ffmpegBin as unknown as string | null) ?? 'ffmpeg';
+    // 使用系统 ffmpeg（通过 Dockerfile apk add ffmpeg 安装，原生架构速度快）
+    // 本地开发：brew install ffmpeg（macOS）
+    const ffmpegPath = 'ffmpeg';
     console.log('[hlsService] ffmpeg 开始切片：', inputPath);
     const proc = spawn(ffmpegPath, args);
 
