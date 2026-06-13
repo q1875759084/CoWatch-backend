@@ -13,7 +13,7 @@ if "%~1"=="" (
     exit /b 1
 )
 
-:: ─── ffmpeg auto-setup ────────────────────────────────────────────────────────
+:: --- ffmpeg auto-setup -------------------------------------------------------
 :: Priority 1: ffmpeg already in system PATH
 :: Priority 2: ffmpeg-bin\ffmpeg.exe next to this script (downloaded automatically)
 :: If neither exists, download from CoWatch CDN (no install, no admin required)
@@ -28,7 +28,7 @@ if errorlevel 1 (
     ) else (
         echo.
         echo  ffmpeg not found. Downloading automatically, please wait...
-        echo  ^(~130 MB, saved to ffmpeg-bin\ next to this script^)
+        echo  (~130 MB, saved to ffmpeg-bin\ next to this script)
         echo.
 
         set FFMPEG_URL=https://static.daibao.site/tools/ffmpeg.exe
@@ -52,7 +52,7 @@ if errorlevel 1 (
         set FFMPEG_CMD=%FFMPEG_LOCAL%
     )
 )
-:: ──────────────────────────────────────────────────────────────────────────────
+:: -----------------------------------------------------------------------------
 
 set INPUT=%~1
 set OUTPUT=%~dp1%~n1_compressed.mp4
