@@ -21,6 +21,13 @@ interface WsMessage {
  */
 const roomPlayback = new Map<string, { isPlaying: boolean; currentTime: number }>();
 
+/** 每个房间的笔迹快照（纯内存，不落库）。
+ * 新成员加入时通过 ROOM_STATE 一次性下发，解决刷新/中途加入看不到历史笔迹的问题。
+ * 上限 500 条，超出时丢弃最旧的。
+ */
+const STROKES_LIMIT = 500;
+const roomStrokes = new Map<string, Array<{ color: string; points: unknown[] }>>();
+
 /**
  * 每个房间的操作序列号（单调递增）。
  * 每次广播 SYNC_STATE / TAG_SEEK 时递增并附带到消息里。
@@ -28,6 +35,12 @@ const roomPlayback = new Map<string, { isPlaying: boolean; currentTime: number }
  * 确保快速连续操作（如 TAG_SEEK → play → pause）在非主控侧按最新状态落地。
  */
 const roomSeq = new Map<string, number>();
+
+/**
+ * 每个房间的共享笔记内容（纯内存，不落库）。
+ * 新成员加入时通过 ROOM_STATE 一次性下发，保证后到成员也能看到笔记内容。
+ */
+const roomNote = new Map<string, string>();
 
 /** 获取房间当前 seq 并递增，用于广播时附带 */
 function nextSeq(roomId: string): number {
@@ -120,6 +133,10 @@ export function initWsServer(httpServer: Server): WebSocketServer {
         // 下发当前播放状态，新加入成员可直接同步
         isPlaying: playback.isPlaying,
         currentTime: playback.currentTime,
+        // 下发历史笔迹快照，中途加入/刷新后可恢复画布内容
+        strokes: roomStrokes.get(roomId) ?? [],
+        // 下发当前共享笔记内容，新成员加入时初始化
+        noteContent: roomNote.get(roomId) ?? '',
         // 视频列表含 objectKey 和 hlsStatus，videoUrl 为 null（切换视频后才有值）
         videos: existingVideos.map((v) => ({
           id: v.id,
@@ -300,6 +317,11 @@ export function initWsServer(httpServer: Server): WebSocketServer {
            */
           const { color, points } = (msg.data ?? {}) as Record<string, unknown>;
           if (typeof color !== 'string' || !Array.isArray(points)) return;
+          // 笔迹快照内存化，超出上限时丢弃最旧的
+          const strokes = roomStrokes.get(roomId) ?? [];
+          strokes.push({ color, points });
+          if (strokes.length > STROKES_LIMIT) strokes.shift();
+          roomStrokes.set(roomId, strokes);
           broadcastExcept(roomId, userId, {
             type: 'DRAW_STROKE',
             data: { userId, color, points },
@@ -312,9 +334,43 @@ export function initWsServer(httpServer: Server): WebSocketServer {
            * 清空画布：广播给房间内其他成员（含发送者自身，确保全员同步清空）。
            * 发送者本地已经清空了，broadcastExcept 只通知其他人。
            */
+          roomStrokes.set(roomId, []); // 同步清空快照
           broadcastExcept(roomId, userId, {
             type: 'DRAW_CLEAR',
             data: { userId },
+          });
+          break;
+        }
+
+        case 'DRAW_CLEAR_COLOR': {
+          /**
+           * 清除指定颜色的笔迹：广播给房间内其他成员。
+           * 发送者本地已过滤，broadcastExcept 只通知其他人。
+           */
+          const { color } = (msg.data ?? {}) as Record<string, unknown>;
+          if (typeof color !== 'string') return;
+          // 同步过滤快照
+          const existing = roomStrokes.get(roomId);
+          if (existing) roomStrokes.set(roomId, existing.filter((s) => s.color !== color));
+          broadcastExcept(roomId, userId, {
+            type: 'DRAW_CLEAR_COLOR',
+            data: { userId, color },
+          });
+          break;
+        }
+
+        case 'NOTE_UPDATE': {
+          /**
+           * 共享笔记同步：主控输入后触发（节流 1000ms），广播给房间内其他成员。
+           * 内存中更新快照，保证新加入成员能通过 ROOM_STATE 获取最新内容。
+           */
+          if (!canControl(userId, latestRoom)) return;
+          const { content } = (msg.data ?? {}) as Record<string, unknown>;
+          if (typeof content !== 'string') return;
+          roomNote.set(roomId, content);
+          broadcastExcept(roomId, userId, {
+            type: 'NOTE_UPDATE',
+            data: { content, fromUserId: userId },
           });
           break;
         }
