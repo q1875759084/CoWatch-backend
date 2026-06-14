@@ -20,6 +20,8 @@ if "%~1"=="" (
 
 set FFMPEG_CMD=ffmpeg
 set FFMPEG_LOCAL=%~dp0ffmpeg-bin\ffmpeg.exe
+set FFMPEG_URL=https://static.daibao.site/tools/ffmpeg.exe
+set FFMPEG_DIR=%~dp0ffmpeg-bin
 
 ffmpeg -version >nul 2>&1
 if errorlevel 1 (
@@ -30,9 +32,6 @@ if errorlevel 1 (
         echo  ffmpeg not found. Downloading automatically, please wait...
         echo  (~130 MB, saved to ffmpeg-bin\ next to this script)
         echo.
-
-        set FFMPEG_URL=https://static.daibao.site/tools/ffmpeg.exe
-        set FFMPEG_DIR=%~dp0ffmpeg-bin
 
         powershell -NoProfile -ExecutionPolicy Bypass -Command ^
             "New-Item -ItemType Directory -Force -Path '%FFMPEG_DIR%' | Out-Null; " ^
