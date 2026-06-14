@@ -19,12 +19,13 @@ export const AuthController = {
 
   /**
    * POST /api/auth/register
-   * 注册并自动登录，返回 accessToken + userInfo
+   * 注册并自动登录，返回 accessToken + userInfo（含 plans）
+   * 需传入邀请码，邀请码类型决定注册后身份
    */
   async register(req: Request, res: Response): Promise<void> {
-    const { username, password } = req.body;
+    const { username, password, inviteCode } = req.body;
     try {
-      const result = await registerUser(username, password);
+      const result = await registerUser(username, password, inviteCode);
       res.cookie('refresh_token', result.refreshToken, REFRESH_COOKIE_OPTIONS);
       success(res, { userInfo: result.userInfo, accessToken: result.accessToken }, '注册成功');
     } catch (err: unknown) {

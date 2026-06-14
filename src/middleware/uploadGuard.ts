@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { fail } from '../utils/response.js';
+import { hasActivePlan } from '../database/subscription/index.js';
 
 /**
  * 视频上传防护中间件
@@ -20,7 +21,11 @@ import { fail } from '../utils/response.js';
  *    计数器存内存 Map，服务重启自动清零，日期变更自动重置。
  */
 
-/** 非白名单用户每日中转上传总字节上限：5 GB */
+/**
+ * 每日中转上传总字节上限：
+ * - vip:basic 会员：无限制（跳过校验）
+ * - 普通成员：5 GB
+ */
 const DAILY_BYTES_LIMIT = 5 * 1024 * 1024 * 1024;
 
 interface DailyRecord {
@@ -73,9 +78,13 @@ export function uploadGuard(req: Request, res: Response, next: NextFunction): vo
     return;
   }
 
-  // ── 校验二：每日总字节数预检 ──────────────────────────────────────────────
+  // ── 校验二：每日总字节数预检（vip:basic 会员跳过）────────────────────────
   // 用 Content-Length 做提前判断（可被伪造，但恶意场景本就是攻击者，增加门槛即可）
   // 真实计费在 proxyUpload 完成后执行，此处仅做"当日余量是否足以容纳本次声明大小"的快速拦截
+  if (hasActivePlan(userId, 'vip:basic')) {
+    next();
+    return;
+  }
   const contentLength = parseInt(req.headers['content-length'] ?? '0', 10);
   const usedBytes = getDailyUsedBytes(userId);
   if (usedBytes + contentLength > DAILY_BYTES_LIMIT) {

@@ -3,6 +3,7 @@ import { RoomsController } from '../../controllers/rooms/index.js';
 import { authMiddleware } from '../../middleware/authMiddleware.js';
 import { roomAuthMiddleware, adminAuthMiddleware } from '../../middleware/roomAuth.js';
 import { uploadGuard } from '../../middleware/uploadGuard.js';
+import { requirePlan } from '../../middleware/planGuard.js';
 
 const router = Router();
 
@@ -12,8 +13,8 @@ router.use(authMiddleware);
 // 获取我的房间列表
 router.get('/my', (req, res) => RoomsController.getMyRooms(req, res));
 
-// 创建房间
-router.post('/', (req, res) => RoomsController.create(req, res));
+// 创建房间（需要 vip:basic 权限）
+router.post('/', requirePlan('vip:basic'), (req, res) => RoomsController.create(req, res));
 
 // 加入房间
 router.post('/:roomId/join', (req, res) => RoomsController.join(req, res));

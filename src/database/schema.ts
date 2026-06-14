@@ -1,15 +1,17 @@
 import { db } from './index.js';
-import { seedDefaultUsers } from './user/index.js';
+import { seedInviteCodes } from './inviteCode/index.js';
 
 /**
  * 初始化所有数据表（幂等，已存在则跳过）
  *
  * 表结构说明：
- *   users        — 注册账号，唯一身份凭证
- *   rooms        — 复盘房间
- *   room_members — 用户与房间的关联关系 + 房间内角色（替代旧 members 表）
- *   room_videos  — 房间内上传的视频记录
- *   tags         — 视频复盘标记点
+ *   users              — 注册账号，唯一身份凭证
+ *   rooms              — 复盘房间
+ *   room_members       — 用户与房间的关联关系 + 房间内角色
+ *   room_videos        — 房间内上传的视频记录
+ *   tags               — 视频复盘标记点
+ *   user_subscriptions — 用户权益订阅（plan 字符串 + 到期时间）
+ *   invite_codes       — 邀请码（含类型：普通码/会员码）
  */
 export function initSchema(): void {
   db.exec(`
@@ -68,6 +70,24 @@ export function initSchema(): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_tags_room_video ON tags (room_id, video_id);
+
+    CREATE TABLE IF NOT EXISTS user_subscriptions (
+      id          TEXT PRIMARY KEY,
+      user_id     TEXT NOT NULL,
+      plan        TEXT NOT NULL,
+      expires_at  INTEGER,
+      created_at  INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON user_subscriptions (user_id);
+
+    CREATE TABLE IF NOT EXISTS invite_codes (
+      code        TEXT PRIMARY KEY,
+      used_count  INTEGER NOT NULL DEFAULT 0,
+      max_count   INTEGER NOT NULL DEFAULT 10,
+      grant_plan  TEXT
+    );
   `);
 
   // 幂等补列迁移：对已存在的旧表自动补齐缺失的列，避免因 CREATE TABLE IF NOT EXISTS
@@ -76,10 +96,8 @@ export function initSchema(): void {
 
   console.log('✅ 数据库表初始化完成');
 
-  // 异步初始化预置账号（bcrypt hash 为异步操作，不阻塞启动）
-  seedDefaultUsers().catch((err) => {
-    console.error('❌ 预置账号初始化失败：', err);
-  });
+  // 初始化预置邀请码（同步，幂等）
+  seedInviteCodes();
 }
 
 /**
@@ -92,8 +110,9 @@ export function initSchema(): void {
 function runMigrations(): void {
   const migrations: Array<{ sql: string; desc: string }> = [
     {
+      // is_upload_whitelist 已废弃（改用 user_subscriptions 判断），列保留不删
       sql: 'ALTER TABLE users ADD COLUMN is_upload_whitelist INTEGER NOT NULL DEFAULT 0',
-      desc: 'users.is_upload_whitelist',
+      desc: 'users.is_upload_whitelist (废弃，仅兼容旧数据)',
     },
     {
       sql: 'ALTER TABLE room_videos ADD COLUMN hls_prefix TEXT',
