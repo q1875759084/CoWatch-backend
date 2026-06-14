@@ -148,7 +148,7 @@ echo.
 
     -f lavfi -i color=black:s=1280x720:r=1 -t 1 ^
 
-    -c:v h264_nvenc -f null - >nul 2>&1
+    -c:v h264_nvenc -f null NUL >nul 2>&1
 
 if not errorlevel 1 (
 
@@ -168,7 +168,7 @@ if not errorlevel 1 (
 
     -f lavfi -i color=black:s=1280x720:r=1 -t 1 ^
 
-    -c:v h264_qsv -f null - >nul 2>&1
+    -c:v h264_qsv -f null NUL >nul 2>&1
 
 if not errorlevel 1 (
 
@@ -188,7 +188,7 @@ if not errorlevel 1 (
 
     -f lavfi -i color=black:s=1280x720:r=1 -t 1 ^
 
-    -c:v h264_amf -f null - >nul 2>&1
+    -c:v h264_amf -f null NUL >nul 2>&1
 
 if not errorlevel 1 (
 
