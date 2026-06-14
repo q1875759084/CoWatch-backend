@@ -74,7 +74,7 @@ if errorlevel 1 (
 
             "Write-Host '  Downloading ffmpeg...'; " ^
 
-            "Invoke-WebRequest -Uri '%FFMPEG_URL%' -OutFile '%FFMPEG_DIR%\ffmpeg.exe'"
+            "Invoke-WebRequest -Uri '%FFMPEG_URL%' -OutFile '%FFMPEG_DIR%\ffmpeg.exe' -UseBasicParsing"
 
 
 
