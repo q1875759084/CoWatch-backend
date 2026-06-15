@@ -55,7 +55,7 @@ router.post(
   authMiddleware,
   avatarUpload.single('avatar'),
   handleMulterError,
-  (req, res) => AuthController.uploadAvatar(req, res),
+  (req: Request, res: Response) => AuthController.uploadAvatar(req, res),
 );
 
 export default router;
