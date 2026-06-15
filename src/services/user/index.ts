@@ -5,10 +5,13 @@ import {
   getUserById,
   getUserByUsername,
   checkUsernameExists,
+  updateUserAvatar,
+  updateUserNickname,
 } from '../../database/user/index.js';
 import { getInviteCode, consumeInviteCode } from '../../database/inviteCode/index.js';
 import { addSubscription, getActivePlans } from '../../database/subscription/index.js';
 import { generateTokens, verifyToken } from '../../utils/jwt.js';
+import { uploadAvatar, DEFAULT_AVATAR_URL } from '../ossService.js';
 
 /**
  * 账号名校验规则：6-20位，英文字母 + 数字 + 特殊字符（!@#$%^&*等）
@@ -21,6 +24,8 @@ export interface UserPublicInfo {
   username: string;
   nickname: string;
   plans: string[];
+  /** 用户头像 URL，始终非空（DB 为 null 时返回默认头像地址） */
+  avatarUrl: string;
 }
 
 export interface AuthResult {
@@ -79,7 +84,13 @@ export async function registerUser(
   const plans = getActivePlans(userId);
   const { accessToken, refreshToken } = generateTokens(user.id);
   return {
-    userInfo: { userId: user.id, username: user.username, nickname: user.nickname, plans },
+    userInfo: {
+      userId: user.id,
+      username: user.username,
+      nickname: user.nickname,
+      plans,
+      avatarUrl: user.avatar_url ?? DEFAULT_AVATAR_URL,
+    },
     accessToken,
     refreshToken,
   };
@@ -106,7 +117,13 @@ export async function loginUser(username: string, password: string): Promise<Aut
   const plans = getActivePlans(user.id);
   const { accessToken, refreshToken } = generateTokens(user.id);
   return {
-    userInfo: { userId: user.id, username: user.username, nickname: user.nickname, plans },
+    userInfo: {
+      userId: user.id,
+      username: user.username,
+      nickname: user.nickname,
+      plans,
+      avatarUrl: user.avatar_url ?? DEFAULT_AVATAR_URL,
+    },
     accessToken,
     refreshToken,
   };
@@ -129,5 +146,49 @@ export function getUserProfile(userId: string): UserPublicInfo {
   const user = getUserById(userId);
   if (!user) throw new Error('用户不存在');
   const plans = getActivePlans(userId);
-  return { userId: user.id, username: user.username, nickname: user.nickname, plans };
+  return {
+    userId: user.id,
+    username: user.username,
+    nickname: user.nickname,
+    plans,
+    avatarUrl: user.avatar_url ?? DEFAULT_AVATAR_URL,
+  };
+}
+
+/**
+ * 上传用户头像：COS 写入 → DB 更新 → 返回新头像 URL
+ *
+ * @param userId   当前登录用户 ID
+ * @param buffer   图片 Buffer（前端 FormData 上传，multer 已解析）
+ * @param mimeType 图片 MIME 类型
+ */
+/** 昵称最大长度 */
+const NICKNAME_MAX_LEN = 20;
+
+/**
+ * 修改用户昵称
+ */
+export function changeUserNickname(userId: string, nickname: string): string {
+  const trimmed = nickname.trim();
+  if (!trimmed) throw new Error('昵称不能为空');
+  if (trimmed.length > NICKNAME_MAX_LEN) throw new Error(`昵称不能超过 ${NICKNAME_MAX_LEN} 个字符`);
+
+  const user = getUserById(userId);
+  if (!user) throw new Error('用户不存在');
+
+  updateUserNickname(userId, trimmed);
+  return trimmed;
+}
+
+export async function uploadUserAvatar(
+  userId: string,
+  buffer: Buffer,
+  mimeType: string,
+): Promise<string> {
+  const user = getUserById(userId);
+  if (!user) throw new Error('用户不存在');
+
+  const avatarUrl = await uploadAvatar(userId, buffer, mimeType);
+  updateUserAvatar(userId, avatarUrl);
+  return avatarUrl;
 }

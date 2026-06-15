@@ -8,6 +8,8 @@ export interface UserRow {
   created_at: number;
   /** @deprecated 已废弃，改用 user_subscriptions 判断权益 */
   is_upload_whitelist: number;
+  /** 用户头像 URL；NULL 表示使用默认头像 */
+  avatar_url: string | null;
 }
 
 /**
@@ -46,4 +48,18 @@ export function getUserByUsername(username: string): UserRow | null {
  */
 export function checkUsernameExists(username: string): boolean {
   return !!db.prepare('SELECT 1 FROM users WHERE username = ?').get(username);
+}
+
+/**
+ * 更新用户头像 URL
+ */
+export function updateUserAvatar(userId: string, avatarUrl: string): void {
+  db.prepare('UPDATE users SET avatar_url = ? WHERE id = ?').run(avatarUrl, userId);
+}
+
+/**
+ * 更新用户昵称
+ */
+export function updateUserNickname(userId: string, nickname: string): void {
+  db.prepare('UPDATE users SET nickname = ? WHERE id = ?').run(nickname, userId);
 }

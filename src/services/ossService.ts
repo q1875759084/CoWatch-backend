@@ -1,5 +1,7 @@
 import { createHash } from 'crypto';
 import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import COS from 'cos-nodejs-sdk-v5';
 
 /**
@@ -120,6 +122,74 @@ export function getSignedUrl(
       },
     );
   });
+}
+
+// ─── 头像上传 ──────────────────────────────────────────────────────────────────
+
+/**
+ * 默认头像 CDN 地址（static 桶 public read，无需鉴权）
+ */
+export const DEFAULT_AVATAR_URL = 'https://static.daibao.site/avatar/default/default.jpg';
+
+/**
+ * 上传用户头像到 COS static 桶，并返回公开访问的 CDN URL
+ *
+ * - objectKey 格式：avatar/{userId}.jpg（同一用户反复上传会覆盖旧图）
+ * - 头像存放在 static 桶（public read），直接走 CDN 访问，无需签名
+ * - 本地开发（未配置 COS）：不写 COS，返回 DEFAULT_AVATAR_URL 以便前端有地址可用
+ *
+ * @param userId   用户 ID（UUID 或数字字符串），作为文件名避免冲突
+ * @param buffer   图片 Buffer（jpg/png/webp 均可，建议前端压缩后上传）
+ * @param mimeType 图片 MIME 类型，默认 image/jpeg
+ */
+export async function uploadAvatar(
+  userId: string,
+  buffer: Buffer,
+  mimeType = 'image/jpeg',
+): Promise<string> {
+  if (!isOssEnabled()) {
+    // 本地开发降级：写入 uploads/avatar/ 目录，走已有的 /uploads 静态服务
+    const __dirname = path.dirname(fileURLToPath(import.meta.url));
+    const avatarDir = path.resolve(__dirname, '../../uploads/avatar');
+    fs.mkdirSync(avatarDir, { recursive: true });
+    const fileName = `${userId}.jpg`;
+    fs.writeFileSync(path.join(avatarDir, fileName), buffer);
+    // 本地服务地址（与 app.ts 中 /uploads 静态路由对应）
+    const localBase = process.env.LOCAL_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3002}`;
+    console.log(`[ossService] 本地模式：头像写入 uploads/avatar/${fileName}`);
+    return `${localBase}/uploads/avatar/${fileName}`;
+  }
+
+  const objectKey = `avatar/${userId}.jpg`;
+  const cdnBase = (process.env.COS_BASE_URL ?? '').replace(/\/$/, '');
+
+  // static 桶：需要单独的 Bucket/Region 配置
+  // 若使用同一个桶，直接用现有 getClient()；若是独立 static 桶，需单独客户端
+  // 当前设计：头像与视频共用同一桶（cowatch-static），通过 objectKey 前缀区分目录
+  await new Promise<void>((resolve, reject) => {
+    getClient().putObject(
+      {
+        Bucket: process.env.COS_BUCKET!,
+        Region: process.env.COS_REGION!,
+        Key: objectKey,
+        ContentType: mimeType,
+        Body: buffer,
+      },
+      (err) => {
+        if (err) reject(err);
+        else resolve();
+      },
+    );
+  });
+
+  // 头像是 public read，直接拼 CDN 域名即可，不需要签名
+  if (cdnBase) {
+    return `${cdnBase}/${objectKey}`;
+  }
+  // fallback：无 CDN 域名时返回 COS 公网地址
+  const region = process.env.COS_REGION!;
+  const bucket = process.env.COS_BUCKET!;
+  return `https://${bucket}.cos.${region}.myqcloud.com/${objectKey}`;
 }
 
 // ─── HLS 切片相关 ──────────────────────────────────────────────────────────────

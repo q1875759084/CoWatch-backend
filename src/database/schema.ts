@@ -125,6 +125,10 @@ function runMigrations(): void {
     // room_members.is_online 废弃：在线状态改为纯内存（roomClients Map）管理，
     // 不再写 DB。SQLite < 3.35 不支持 DROP COLUMN，旧库中该列继续存在但永不读写。
     // 新库通过上方 CREATE TABLE IF NOT EXISTS 建表时已不含该列。
+    {
+      sql: "ALTER TABLE users ADD COLUMN avatar_url TEXT",
+      desc: 'users.avatar_url（用户头像 URL，NULL 表示使用默认头像）',
+    },
   ];
 
   for (const { sql, desc } of migrations) {
