@@ -7,12 +7,12 @@ import { fail } from '../../utils/response.js';
 const BAT_DIR = path.resolve(process.cwd(), 'src/assets/bat');
 
 /** 合法的 CRF 数字档位 */
-const VALID_PRESETS = ['23', '26', '28', '30'] as const;
+const VALID_PRESETS = ['30'] as const;
 type EncodePreset = typeof VALID_PRESETS[number];
 
 export const BatController = {
   /**
-   * GET /api/bat?preset=23|26|28|30
+   * GET /api/bat?preset=30
    * 下载对应 CRF 档位的 .bat 转码脚本，无需鉴权
    */
   download(req: Request, res: Response): void {
