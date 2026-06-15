@@ -35,7 +35,7 @@ if exist "%FFMPEG_LOCAL%" (
         goto :encode
     )
     echo.
-    echo  Local ffmpeg found but cannot run (corrupted or blocked). Re-downloading...
+    echo  Local ffmpeg found but cannot run ^(corrupted or blocked^). Re-downloading...
     echo.
 )
 
@@ -45,9 +45,24 @@ echo  ffmpeg not found. Downloading automatically, please wait...
 echo  (~130 MB, saved to ffmpeg-bin\ next to this script)
 echo.
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$ProgressPreference = 'SilentlyContinue'; " ^
     "New-Item -ItemType Directory -Force -Path '%FFMPEG_DIR%' | Out-Null; " ^
     "Write-Host '  Downloading ffmpeg...'; " ^
-    "Invoke-WebRequest -Uri '%FFMPEG_URL%' -OutFile '%FFMPEG_DIR%\ffmpeg.exe' -UseBasicParsing"
+    "try { " ^
+    "  Invoke-WebRequest -Uri '%FFMPEG_URL%' -OutFile '%FFMPEG_DIR%\ffmpeg.exe' -UseBasicParsing; " ^
+    "  Write-Host '  Download finished.' " ^
+    "} catch { " ^
+    "  Write-Host '  [ERROR] Download failed:' $_.Exception.Message; " ^
+    "  exit 1 " ^
+    "} "
+
+if errorlevel 1 (
+    echo.
+    echo  [ERROR] Download process failed. See details above.
+    echo.
+    pause
+    exit /b 1
+)
 
 if not exist "%FFMPEG_LOCAL%" (
     echo.
