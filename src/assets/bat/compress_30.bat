@@ -15,13 +15,13 @@ if "%~1"=="" (
 
 :: --- ffmpeg auto-setup -------------------------------------------------------
 :: Priority 1: ffmpeg already in system PATH
-:: Priority 2: ffmpeg-bin\ffmpeg.exe next to this script (downloaded automatically)
+:: Priority 2: ffmpeg-bin\ffmpeg.exe in %LOCALAPPDATA%\CoWatch\ (downloaded automatically)
 :: If neither exists, download from CoWatch CDN (no install, no admin required)
 
 set FFMPEG_CMD=ffmpeg
-set FFMPEG_LOCAL=%~dp0ffmpeg-bin\ffmpeg.exe
+set FFMPEG_LOCAL=%LOCALAPPDATA%\CoWatch\ffmpeg-bin\ffmpeg.exe
 set FFMPEG_URL=https://static.daibao.site/tools/ffmpeg.exe
-set FFMPEG_DIR=%~dp0ffmpeg-bin
+set FFMPEG_DIR=%LOCALAPPDATA%\CoWatch\ffmpeg-bin
 
 :: Check system ffmpeg first
 ffmpeg -version >nul 2>&1
@@ -42,7 +42,7 @@ if exist "%FFMPEG_LOCAL%" (
 :: Download ffmpeg
 echo.
 echo  ffmpeg not found. Downloading automatically, please wait...
-echo  (~130 MB, saved to ffmpeg-bin\ next to this script)
+echo  (~130 MB, saved to %LOCALAPPDATA%\CoWatch\ffmpeg-bin\)
 echo.
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "$ProgressPreference = 'SilentlyContinue'; " ^
