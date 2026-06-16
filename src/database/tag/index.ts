@@ -51,3 +51,10 @@ export function getTagsByRoomVideo(roomId: string, videoId: string): TagRow[] {
     SELECT * FROM tags WHERE room_id = ? AND video_id = ? ORDER BY time ASC
   `).all(roomId, videoId) as TagRow[];
 }
+
+/**
+ * 批量删除某视频的所有 Tag（删除视频时级联调用）
+ */
+export function deleteTagsByVideo(videoId: string): void {
+  db.prepare('DELETE FROM tags WHERE video_id = ?').run(videoId);
+}

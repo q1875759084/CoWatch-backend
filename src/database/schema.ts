@@ -129,6 +129,10 @@ function runMigrations(): void {
       sql: "ALTER TABLE users ADD COLUMN avatar_url TEXT",
       desc: 'users.avatar_url（用户头像 URL，NULL 表示使用默认头像）',
     },
+    {
+      sql: "ALTER TABLE room_videos ADD COLUMN display_name TEXT",
+      desc: 'room_videos.display_name（用户自定义展示名，NULL 时前端 fallback 到 file_name）',
+    },
   ];
 
   for (const { sql, desc } of migrations) {

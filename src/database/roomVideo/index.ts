@@ -9,6 +9,8 @@ export interface RoomVideoRow {
   created_at: number;
   hls_prefix: string | null;
   hls_status: 'pending' | 'done' | 'error';
+  /** 用户自定义展示名，NULL 时前端 fallback 到 file_name */
+  display_name: string | null;
 }
 
 /**
@@ -71,4 +73,18 @@ export function updateHlsStatus(
 export function getVideoIdByObjectKey(objectKey: string): string | null {
   const row = db.prepare('SELECT id FROM room_videos WHERE video_url = ? ORDER BY created_at DESC LIMIT 1').get(objectKey) as { id: string } | undefined;
   return row?.id ?? null;
+}
+
+/**
+ * 更新视频的自定义展示名称
+ */
+export function updateDisplayName(videoId: string, displayName: string): void {
+  db.prepare('UPDATE room_videos SET display_name = ? WHERE id = ?').run(displayName, videoId);
+}
+
+/**
+ * 删除视频记录（调用前应先调用 deleteTagsByVideo 级联删 tags）
+ */
+export function deleteRoomVideo(videoId: string): void {
+  db.prepare('DELETE FROM room_videos WHERE id = ?').run(videoId);
 }

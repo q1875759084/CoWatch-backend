@@ -56,6 +56,16 @@ router.put('/:roomId/upload', roomAuthMiddleware, adminAuthMiddleware, (req, res
   RoomsController.uploadLocal(req, res),
 );
 
+// 重命名视频（上传者 或 管理员）
+router.patch('/:roomId/videos/:videoId/name', roomAuthMiddleware, (req, res) =>
+  RoomsController.renameVideo(req, res),
+);
+
+// 删除视频及其所有 tags（上传者 或 管理员）
+router.delete('/:roomId/videos/:videoId', roomAuthMiddleware, (req, res) =>
+  RoomsController.deleteVideo(req, res),
+);
+
 // 注：PUT /:roomId/video（白名单直传 confirm 接口）已废弃，不再注册
 
 export default router;

@@ -6,8 +6,8 @@ import { Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { createRoom, getRoomById, setControllerId } from '../../database/room/index.js';
 import { joinRoom, getMembersByRoom, getRoomsByUser } from '../../database/roomMember/index.js';
-import { addRoomVideo, getVideosByRoom } from '../../database/roomVideo/index.js';
-import { getTagsByRoomVideo } from '../../database/tag/index.js';
+import { addRoomVideo, getVideosByRoom, getRoomVideoById, updateDisplayName, deleteRoomVideo } from '../../database/roomVideo/index.js';
+import { getTagsByRoomVideo, deleteTagsByVideo } from '../../database/tag/index.js';
 import { generateRoomId } from '../../utils/roomId.js';
 import { isOssEnabled } from '../../services/ossService.js';
 import { addDailyBytes } from '../../middleware/uploadGuard.js';
@@ -125,6 +125,7 @@ export const RoomsController = {
         id: v.id,
         objectKey: v.video_url,
         fileName: v.file_name,
+        displayName: v.display_name ?? null,
         uploaderId: v.uploader_id,
         createdAt: v.created_at,
         hlsStatus: v.hls_status,
@@ -157,6 +158,86 @@ export const RoomsController = {
         createdAt: t.created_at,
       })),
     });
+  },
+
+  /**
+   * PATCH /api/rooms/:roomId/videos/:videoId/name
+   * 更新视频的自定义展示名称。
+   * 权限：房间成员 + （上传者 或 管理员）
+   */
+  async renameVideo(req: Request, res: Response): Promise<void> {
+    const { roomId, videoId } = req.params;
+    const { displayName } = req.body as { displayName?: string };
+    const userId = req.userId!;
+
+    if (!displayName || typeof displayName !== 'string' || displayName.trim().length === 0) {
+      fail(res, 400, 'displayName 不能为空');
+      return;
+    }
+    if (displayName.trim().length > 50) {
+      fail(res, 400, 'displayName 最多 50 个字符');
+      return;
+    }
+
+    const video = getRoomVideoById(videoId);
+    if (!video || video.room_id !== roomId) {
+      fail(res, 404, '视频不存在');
+      return;
+    }
+
+    // 权限校验：上传者 或 管理员（isAdmin 由 roomAuthMiddleware 挂载）
+    const isUploader = video.uploader_id === userId;
+    if (!isUploader && !req.isAdmin) {
+      fail(res, 403, '仅上传者或管理员可修改视频名称');
+      return;
+    }
+
+    const trimmed = displayName.trim();
+    updateDisplayName(videoId, trimmed);
+
+    // 广播给房间全员
+    broadcast(roomId, {
+      type: 'VIDEO_RENAMED',
+      data: { videoId, displayName: trimmed },
+    });
+
+    success(res, { videoId, displayName: trimmed });
+  },
+
+  /**
+   * DELETE /api/rooms/:roomId/videos/:videoId
+   * 删除视频及其所有 tags。
+   * 权限：房间成员 + （上传者 或 管理员）
+   */
+  async deleteVideo(req: Request, res: Response): Promise<void> {
+    const { roomId, videoId } = req.params;
+    const userId = req.userId!;
+
+    const video = getRoomVideoById(videoId);
+    if (!video || video.room_id !== roomId) {
+      fail(res, 404, '视频不存在');
+      return;
+    }
+
+    // 权限校验：上传者 或 管理员（isAdmin 由 roomAuthMiddleware 挂载）
+    const isUploader = video.uploader_id === userId;
+    if (!isUploader && !req.isAdmin) {
+      fail(res, 403, '仅上传者或管理员可删除视频');
+      return;
+    }
+
+    // 级联删除该视频的所有 tags
+    deleteTagsByVideo(videoId);
+    // 删除视频记录
+    deleteRoomVideo(videoId);
+
+    // 广播给房间全员
+    broadcast(roomId, {
+      type: 'VIDEO_DELETED',
+      data: { videoId },
+    });
+
+    success(res, { videoId });
   },
 
   /**
