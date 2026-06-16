@@ -388,6 +388,17 @@ export function initWsServer(httpServer: Server): WebSocketServer {
       removeClient(roomId, userId);
 
       const freshRoom = getRoomById(roomId);
+
+      // 若房间已无在线成员，代表本次复盘结束，完整清理房间状态：
+      //   1. 重置 roomPlayback（isPlaying → false, currentTime → 0），避免下次进入时自动起播
+      //   2. 清空 DB 里的激活视频（video_url → null），下次复盘从全新状态开始
+      // roomPlayback 是纯内存状态，不会随浏览器关闭而自动清零，必须手动处理。
+      const remainingClients = getOnlineUserIds(roomId);
+      if (remainingClients.size === 0) {
+        roomPlayback.set(roomId, { isPlaying: false, currentTime: 0 });
+        setVideoUrl(roomId, null);
+      }
+
       if (freshRoom && freshRoom.controller_id === userId) {
         const admin = getAdminByRoom(roomId);
         const newControllerId = admin ? admin.user_id : null;

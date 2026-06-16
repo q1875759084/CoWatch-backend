@@ -23,7 +23,7 @@ export function getRoomById(id: string): RoomRow | null {
   return (db.prepare('SELECT * FROM rooms WHERE id = ?').get(id) as RoomRow) ?? null;
 }
 
-export function setVideoUrl(roomId: string, videoUrl: string): void {
+export function setVideoUrl(roomId: string, videoUrl: string | null): void {
   db.prepare('UPDATE rooms SET video_url = ?, updated_at = ? WHERE id = ?')
     .run(videoUrl, Date.now(), roomId);
 }
