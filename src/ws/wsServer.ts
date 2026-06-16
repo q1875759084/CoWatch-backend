@@ -7,6 +7,7 @@ import { getRoomMember, getAdminByRoom, getMembersByRoom } from '../database/roo
 import { getRoomById, setControllerId, setVideoUrl } from '../database/room/index.js';
 import { getVideosByRoom, getVideoIdByObjectKey } from '../database/roomVideo/index.js';
 import { addTag, deleteTag } from '../database/tag/index.js';
+import { getLabelsByVideo } from '../database/videoLabel/index.js';
 import { getUserById } from '../database/user/index.js';
 import { addClient, removeClient, broadcast, broadcastExcept, sendToClient, getOnlineUserIds } from '../controllers/ws/registry.js';
 
@@ -148,6 +149,7 @@ export function initWsServer(httpServer: Server): WebSocketServer {
           uploaderId: v.uploader_id,
           createdAt: v.created_at,
           hlsStatus: v.hls_status,
+          labels: getLabelsByVideo(v.id),
         })),
         // 下发当前房间内所有成员（含在线状态）
         members: currentMembers.map((m) => ({

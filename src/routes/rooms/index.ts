@@ -66,6 +66,11 @@ router.delete('/:roomId/videos/:videoId', roomAuthMiddleware, (req, res) =>
   RoomsController.deleteVideo(req, res),
 );
 
+// 整体替换视频 label 列表（上传者 或 管理员）
+router.put('/:roomId/videos/:videoId/labels', roomAuthMiddleware, (req, res) =>
+  RoomsController.updateVideoLabels(req, res),
+);
+
 // 注：PUT /:roomId/video（白名单直传 confirm 接口）已废弃，不再注册
 
 export default router;

@@ -8,6 +8,7 @@ import { createRoom, getRoomById, setControllerId } from '../../database/room/in
 import { joinRoom, getMembersByRoom, getRoomsByUser } from '../../database/roomMember/index.js';
 import { addRoomVideo, getVideosByRoom, getRoomVideoById, updateDisplayName, deleteRoomVideo } from '../../database/roomVideo/index.js';
 import { getTagsByRoomVideo, deleteTagsByVideo } from '../../database/tag/index.js';
+import { getLabelsByVideo, setLabelsForVideo, deleteLabelsByVideo } from '../../database/videoLabel/index.js';
 import { generateRoomId } from '../../utils/roomId.js';
 import { isOssEnabled } from '../../services/ossService.js';
 import { addDailyBytes } from '../../middleware/uploadGuard.js';
@@ -129,6 +130,7 @@ export const RoomsController = {
         uploaderId: v.uploader_id,
         createdAt: v.created_at,
         hlsStatus: v.hls_status,
+        labels: getLabelsByVideo(v.id),
       })),
     });
   },
@@ -226,8 +228,9 @@ export const RoomsController = {
       return;
     }
 
-    // 级联删除该视频的所有 tags
+    // 级联删除该视频的所有 tags 和 labels
     deleteTagsByVideo(videoId);
+    deleteLabelsByVideo(videoId);
     // 删除视频记录
     deleteRoomVideo(videoId);
 
@@ -238,6 +241,56 @@ export const RoomsController = {
     });
 
     success(res, { videoId });
+  },
+
+  /**
+   * PUT /api/rooms/:roomId/videos/:videoId/labels
+   * 整体替换视频的 label 列表。
+   * 权限：房间成员 + （上传者 或 管理员）
+   */
+  async updateVideoLabels(req: Request, res: Response): Promise<void> {
+    const { roomId, videoId } = req.params;
+    const { labels } = req.body as { labels?: unknown };
+    const userId = req.userId!;
+
+    if (!Array.isArray(labels)) {
+      fail(res, 400, 'labels 必须为数组');
+      return;
+    }
+    if (labels.length > 3) {
+      fail(res, 400, 'label 最多 3 个');
+      return;
+    }
+    for (const l of labels) {
+      if (typeof l !== 'string' || l.trim().length === 0 || l.trim().length > 8) {
+        fail(res, 400, '每个 label 为 1~8 个字');
+        return;
+      }
+    }
+
+    const video = getRoomVideoById(videoId);
+    if (!video || video.room_id !== roomId) {
+      fail(res, 404, '视频不存在');
+      return;
+    }
+
+    // 权限校验：上传者 或 管理员
+    const isUploader = video.uploader_id === userId;
+    if (!isUploader && !req.isAdmin) {
+      fail(res, 403, '仅上传者或管理员可修改 label');
+      return;
+    }
+
+    const trimmed = (labels as string[]).map((l) => l.trim());
+    setLabelsForVideo(videoId, trimmed);
+
+    // 广播给房间全员
+    broadcast(roomId, {
+      type: 'VIDEO_LABELS_UPDATED',
+      data: { videoId, labels: trimmed },
+    });
+
+    success(res, { videoId, labels: trimmed });
   },
 
   /**

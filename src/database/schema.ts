@@ -82,6 +82,17 @@ export function initSchema(): void {
 
     CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON user_subscriptions (user_id);
 
+    CREATE TABLE IF NOT EXISTS video_labels (
+      id         TEXT PRIMARY KEY,
+      video_id   TEXT NOT NULL,
+      label      TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (video_id) REFERENCES room_videos(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_video_labels_video ON video_labels (video_id);
+
     CREATE TABLE IF NOT EXISTS invite_codes (
       code        TEXT PRIMARY KEY,
       used_count  INTEGER NOT NULL DEFAULT 0,
