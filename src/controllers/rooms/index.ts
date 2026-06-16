@@ -10,7 +10,7 @@ import { addRoomVideo, getVideosByRoom, getRoomVideoById, updateDisplayName, del
 import { getTagsByRoomVideo, deleteTagsByVideo } from '../../database/tag/index.js';
 import { getLabelsByVideo, setLabelsForVideo, deleteLabelsByVideo } from '../../database/videoLabel/index.js';
 import { generateRoomId } from '../../utils/roomId.js';
-import { isOssEnabled } from '../../services/ossService.js';
+import { isOssEnabled, DEFAULT_AVATAR_URL } from '../../services/ossService.js';
 import { addDailyBytes } from '../../middleware/uploadGuard.js';
 import { transcodeToHls, generateM3u8 } from '../../services/hlsService.js';
 import { success, fail } from '../../utils/response.js';
@@ -97,6 +97,7 @@ export const RoomsController = {
         userId: m.user_id,
         nickname: m.nickname,
         isAdmin: m.is_admin === 1,
+        avatarUrl: m.avatar_url ?? DEFAULT_AVATAR_URL,
       })),
     });
   },

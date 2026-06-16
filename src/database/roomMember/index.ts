@@ -36,11 +36,12 @@ export function getRoomMember(userId: string, roomId: string): RoomMemberRow | n
  */
 export interface RoomMemberWithNickname extends RoomMemberRow {
   nickname: string;
+  avatar_url: string | null;
 }
 
 export function getMembersByRoom(roomId: string): RoomMemberWithNickname[] {
   return db.prepare(`
-    SELECT rm.*, u.nickname
+    SELECT rm.*, u.nickname, u.avatar_url
     FROM room_members rm
     JOIN users u ON u.id = rm.user_id
     WHERE rm.room_id = ?
@@ -54,7 +55,7 @@ export function getMembersByRoom(roomId: string): RoomMemberWithNickname[] {
 export function getAdminByRoom(roomId: string): RoomMemberWithNickname | null {
   return (
     db.prepare(`
-      SELECT rm.*, u.nickname
+      SELECT rm.*, u.nickname, u.avatar_url
       FROM room_members rm
       JOIN users u ON u.id = rm.user_id
       WHERE rm.room_id = ? AND rm.is_admin = 1
