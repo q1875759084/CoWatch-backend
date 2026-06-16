@@ -380,6 +380,71 @@ export function initWsServer(httpServer: Server): WebSocketServer {
           break;
         }
 
+        case 'FORCE_SYNC': {
+          /**
+           * 复盘模式 — 强制同步：
+           *   - 发送者 == 主控：构造完整 ROOM_STATE，附带 forceSynced: true，
+           *     广播给房间内所有非主控成员（broadcastExcept 发送者自身）
+           *   - 发送者 != 主控（非主控开启跟随开关）：构造完整 ROOM_STATE，附带 forceSynced: false，
+           *     单播回发送者自己，使其立即与当前主控状态对齐
+           */
+          const freshRoomForSync = getRoomById(roomId);
+          if (!freshRoomForSync) break;
+
+          const syncPlayback = roomPlayback.get(roomId) ?? { isPlaying: false, currentTime: 0 };
+          const syncActiveObjectKey = freshRoomForSync.video_url ?? null;
+          const syncVideoUrl = syncActiveObjectKey ? toPlayUrl(roomId, syncActiveObjectKey) : null;
+          const syncVideos = getVideosByRoom(roomId);
+          const syncMembers = getMembersByRoom(roomId);
+          const syncOnlineIds = getOnlineUserIds(roomId);
+
+          const roomStateData = {
+            videoUrl: syncVideoUrl,
+            activeObjectKey: syncActiveObjectKey,
+            controlMode: freshRoomForSync.control_mode,
+            controllerId: freshRoomForSync.controller_id,
+            isPlaying: syncPlayback.isPlaying,
+            currentTime: syncPlayback.currentTime,
+            strokes: roomStrokes.get(roomId) ?? [],
+            noteContent: roomNote.get(roomId) ?? '',
+            videos: syncVideos.map((v) => ({
+              id: v.id,
+              objectKey: v.video_url,
+              videoUrl: null,
+              fileName: v.file_name,
+              uploaderId: v.uploader_id,
+              createdAt: v.created_at,
+              hlsStatus: v.hls_status,
+              labels: getLabelsByVideo(v.id),
+            })),
+            members: syncMembers.map((m) => ({
+              userId: m.user_id,
+              nickname: m.nickname,
+              isAdmin: m.is_admin === 1,
+              isOnline: syncOnlineIds.has(m.user_id),
+            })),
+            tags: [],
+          };
+
+          const isController = canControl(userId, freshRoomForSync);
+          if (isController) {
+            // 主控一键拉回：广播给所有非主控成员，forceSynced: true 使其重置跟随开关
+            broadcastExcept(roomId, userId, {
+              type: 'ROOM_STATE',
+              data: { ...roomStateData, forceSynced: true },
+            });
+            console.log(`[WS] FORCE_SYNC from controller ${userId}, broadcast ROOM_STATE to room ${roomId}`);
+          } else {
+            // 非主控开启跟随：单播回自己，立即对齐当前状态
+            sendToClient(roomId, userId, {
+              type: 'ROOM_STATE',
+              data: { ...roomStateData, forceSynced: false },
+            });
+            console.log(`[WS] FORCE_SYNC from member ${userId}, unicast ROOM_STATE back`);
+          }
+          break;
+        }
+
         default:
           console.warn(`[WS] 未知消息类型: ${msg.type}`);
       }
