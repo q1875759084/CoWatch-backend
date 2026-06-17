@@ -174,11 +174,14 @@ export const DEFAULT_AVATAR_URL = `${(process.env.COS_STATIC_URL ?? '').replace(
 /**
  * 上传用户头像到 COS static 桶，并返回公开访问的 CDN URL
  *
- * - objectKey 格式：avatar/{userId}.jpg（同一用户反复上传会覆盖旧图）
+ * - objectKey 格式：avatar/{userId}/{userId}-{ts}.jpg
+ *   - 按用户前缀隔离，方便未来按用户维度管理（列举/统计）
+ *   - 时间戳后缀保证每次上传 URL 唯一，彻底绕过 CDN 缓存
+ *   - 旧文件不主动删除（头像文件极小，存储成本忽略不计）
  * - 头像存放在 static 桶（public read），直接走 CDN 访问，无需签名
- * - 本地开发（未配置 COS）：不写 COS，返回 DEFAULT_AVATAR_URL 以便前端有地址可用
+ * - 本地开发（未配置 COS）：写入 uploads/avatar/{userId}/ 目录
  *
- * @param userId   用户 ID（UUID 或数字字符串），作为文件名避免冲突
+ * @param userId   用户 ID（UUID），作为目录名 + 文件名前缀
  * @param buffer   图片 Buffer（jpg/png/webp 均可，建议前端压缩后上传）
  * @param mimeType 图片 MIME 类型，默认 image/jpeg
  */
@@ -187,20 +190,23 @@ export async function uploadAvatar(
   buffer: Buffer,
   mimeType = 'image/jpeg',
 ): Promise<string> {
+  // 时间戳后缀：每次上传生成不同 URL，绕过 CDN 对固定路径的缓存
+  const ts = Date.now();
+
   if (!isStaticOssEnabled()) {
-    // 本地开发降级：写入 uploads/avatar/ 目录，走已有的 /uploads 静态服务
+    // 本地开发降级：写入 uploads/avatar/{userId}/ 目录，走已有的 /uploads 静态服务
     const __dirname = path.dirname(fileURLToPath(import.meta.url));
-    const avatarDir = path.resolve(__dirname, '../../uploads/avatar');
+    const avatarDir = path.resolve(__dirname, `../../uploads/avatar/${userId}`);
     fs.mkdirSync(avatarDir, { recursive: true });
-    const fileName = `${userId}.jpg`;
+    const fileName = `${userId}-${ts}.jpg`;
     fs.writeFileSync(path.join(avatarDir, fileName), buffer);
     // 本地服务地址（与 app.ts 中 /uploads 静态路由对应）
     const localBase = process.env.LOCAL_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3002}`;
-    console.log(`[ossService] 本地模式：头像写入 uploads/avatar/${fileName}`);
-    return `${localBase}/uploads/avatar/${fileName}`;
+    console.log(`[ossService] 本地模式：头像写入 uploads/avatar/${userId}/${fileName}`);
+    return `${localBase}/uploads/avatar/${userId}/${fileName}`;
   }
 
-  const objectKey = `avatar/${userId}.jpg`;
+  const objectKey = `avatar/${userId}/${userId}-${ts}.jpg`;
 
   // static 桶独立客户端：桶名来自 COS_STATIC_BUCKET，地域复用 COS_REGION
   await new Promise<void>((resolve, reject) => {
