@@ -43,6 +43,22 @@ const roomSeq = new Map<string, number>();
  */
 const roomNote = new Map<string, string>();
 
+/** 聊天消息结构 */
+interface ChatMessage {
+  userId: string;
+  nickname: string;
+  content: string;
+  timestamp: number;
+}
+
+/**
+ * 每个房间的聊天消息缓存（纯内存，不落库）。
+ * 最多保留最近 50 条，超出时丢弃最旧的。
+ * 新成员加入时通过 ROOM_STATE 下发，保证中途加入也能看到近期消息。
+ */
+const CHAT_LIMIT = 50;
+const roomChat = new Map<string, ChatMessage[]>();
+
 /** 获取房间当前 seq 并递增，用于广播时附带 */
 function nextSeq(roomId: string): number {
   const seq = (roomSeq.get(roomId) ?? 0) + 1;
@@ -140,6 +156,8 @@ export function initWsServer(httpServer: Server): WebSocketServer {
         strokes: roomStrokes.get(roomId) ?? [],
         // 下发当前共享笔记内容，新成员加入时初始化
         noteContent: roomNote.get(roomId) ?? '',
+        // 下发最近聊天消息，新成员加入时初始化
+        chatMessages: roomChat.get(roomId) ?? [],
         // 视频列表含 objectKey 和 hlsStatus，videoUrl 为 null（切换视频后才有值）
         videos: existingVideos.map((v) => ({
           id: v.id,
@@ -380,6 +398,28 @@ export function initWsServer(httpServer: Server): WebSocketServer {
           break;
         }
 
+        case 'CHAT_MESSAGE': {
+          /**
+           * 聊天消息：全员可发，广播给房间内所有成员（含发送者自身）。
+           * 内存缓存最近 50 条，新成员加入时通过 ROOM_STATE 下发。
+           * 不落库，刷新/重新加入后只能看到缓存内的历史消息。
+           */
+          const { content: chatContent } = (msg.data ?? {}) as Record<string, unknown>;
+          if (typeof chatContent !== 'string' || !chatContent.trim()) return;
+          const chatMsg: ChatMessage = {
+            userId,
+            nickname,
+            content: chatContent.trim(),
+            timestamp: Date.now(),
+          };
+          const chats = roomChat.get(roomId) ?? [];
+          chats.push(chatMsg);
+          if (chats.length > CHAT_LIMIT) chats.shift();
+          roomChat.set(roomId, chats);
+          broadcast(roomId, { type: 'CHAT_MESSAGE', data: chatMsg });
+          break;
+        }
+
         case 'FORCE_SYNC': {
           /**
            * 复盘模式 — 强制同步：
@@ -407,6 +447,7 @@ export function initWsServer(httpServer: Server): WebSocketServer {
             currentTime: syncPlayback.currentTime,
             strokes: roomStrokes.get(roomId) ?? [],
             noteContent: roomNote.get(roomId) ?? '',
+            chatMessages: roomChat.get(roomId) ?? [],
             videos: syncVideos.map((v) => ({
               id: v.id,
               objectKey: v.video_url,
