@@ -181,6 +181,20 @@ export function initWsServer(httpServer: Server): WebSocketServer {
       },
     });
 
+    // ── 自动成为主控（第一个进入房间的人）────────────────────────────────────
+    // addClient 已执行，onlineIds 包含自己。
+    // 若自己是房间内唯一在线成员，自动成为主控。
+    // Node.js 单线程：addClient + getOnlineUserIds + setControllerId 串行，
+    // 多人同时连接时只有第一个执行时 size===1，后续均为 size>1，不会重复触发。
+    if (onlineIds.size === 1) {
+      setControllerId(roomId, userId);
+      broadcast(roomId, {
+        type: 'CONTROL_CHANGED',
+        data: { controllerId: userId, controllerNickname: nickname },
+      });
+      console.log(`[WS] ${nickname}(${userId}) auto-assigned as controller of room ${roomId}`);
+    }
+
     console.log(`[WS] ${nickname}(${userId}) joined room ${roomId}`);
 
     // ── 消息处理 ────────────────────────────────────────────────────────────
@@ -218,7 +232,8 @@ export function initWsServer(httpServer: Server): WebSocketServer {
         }
 
         case 'TRANSFER_CONTROL': {
-          if (member.is_admin !== 1) return;
+          // 主控 或 管理员 均可转让控制权
+          if (!canControl(userId, latestRoom) && member.is_admin !== 1) return;
           const targetUserId = msg.data?.targetUserId as string | undefined;
           if (!targetUserId) return;
           const targetMember = getRoomMember(targetUserId, roomId);
@@ -508,14 +523,33 @@ export function initWsServer(httpServer: Server): WebSocketServer {
       }
 
       if (freshRoom && freshRoom.controller_id === userId) {
+        // 主控离线：按优先级寻找继任者
+        //   1. 管理员（在线）
+        //   2. 任意在线成员（remainingClients 第一个）
+        //   3. null（房间已空，下次有人进入时由规则一自动处理）
+        let newControllerId: string | null = null;
+        let newControllerNickname: string = '';
+
         const admin = getAdminByRoom(roomId);
-        const newControllerId = admin ? admin.user_id : null;
+        if (admin && remainingClients.has(admin.user_id)) {
+          // 管理员在线，优先转给管理员
+          newControllerId = admin.user_id;
+          newControllerNickname = admin.nickname;
+        } else if (remainingClients.size > 0) {
+          // 管理员不在线，取第一个在线成员
+          const fallbackId = remainingClients.values().next().value as string;
+          const fallbackUser = getUserById(fallbackId);
+          newControllerId = fallbackId;
+          newControllerNickname = fallbackUser?.nickname ?? fallbackId;
+        }
+
         setControllerId(roomId, newControllerId);
         if (newControllerId) {
           broadcast(roomId, {
             type: 'CONTROL_CHANGED',
-            data: { controllerId: newControllerId, controllerNickname: admin!.nickname },
+            data: { controllerId: newControllerId, controllerNickname: newControllerNickname },
           });
+          console.log(`[WS] controller changed to ${newControllerNickname}(${newControllerId}) after ${nickname} left`);
         }
       }
 
