@@ -6,6 +6,7 @@ import express, { Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import { initSchema } from './database/schema.js';
+import { validateOnlineConfig } from './services/ossService.js';
 import routes from './routes/index.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { initWsServer } from './ws/wsServer.js';
@@ -19,6 +20,12 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason) => {
   console.error('[process] unhandledRejection（已捕获，进程继续运行）:', reason);
 });
+
+// ─── 配置校验（启动时执行）────────────────────────────────────────────────────
+// 线上模式：COS/CDN 变量必须全部存在，任意缺失则 fatal exit。
+// 本地模式：所有变量均未配置时静默通过。
+// 中间状态（部分配置）视为配置异常，同样 fatal exit。
+validateOnlineConfig();
 
 // ─── 数据库初始化（启动时执行，幂等）────────────────────────────────────────
 initSchema();
@@ -40,7 +47,7 @@ app.use(cors({
 app.use(cookieParser());
 app.use(express.json());
 
-// 本地开发模式：将 uploads 目录作为静态文件服务（OSS 模式下此目录不会被写入）
+// 本地模式：将 uploads 目录作为静态文件服务（线上模式下此目录不会被写入）
 // __dirname 在 tsx 直接运行时指向 src/，所以上溯一层到项目根目录再进 uploads
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const uploadsDir = path.resolve(__dirname, '../uploads');

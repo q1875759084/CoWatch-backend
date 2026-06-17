@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { RoomsController } from '../../controllers/rooms/index.js';
 import { authMiddleware } from '../../middleware/authMiddleware.js';
-import { roomAuthMiddleware, adminAuthMiddleware } from '../../middleware/roomAuth.js';
+import { roomAuthMiddleware } from '../../middleware/roomAuth.js';
 import { uploadGuard } from '../../middleware/uploadGuard.js';
 import { requirePlan } from '../../middleware/planGuard.js';
 
@@ -38,21 +38,21 @@ router.get('/:roomId/videos/:videoId/m3u8', roomAuthMiddleware, (req, res) =>
 // 获取房间信息（放在子路由之后，避免 /:roomId 提前匹配 /videos、/tags 等路径）
 router.get('/:roomId', (req, res) => RoomsController.getInfo(req, res));
 
-// 获取上传 URL（需是房间管理员）
+// 获取上传 URL（房间所有成员均可上传）
 // 所有用户统一返回 mode: 'proxy'（已废弃白名单直传分支）
-router.get('/:roomId/upload-url', roomAuthMiddleware, adminAuthMiddleware, (req, res) =>
+router.get('/:roomId/upload-url', roomAuthMiddleware, (req, res) =>
   RoomsController.getUploadUrl(req, res),
 );
 
-// 代理上传（需是房间管理员）
+// 代理上传（房间所有成员均可上传）
 // uploadGuard：校验 Sec-Fetch 请求头 + 每日中转总流量限制
 // 注意：需要禁用 express.json/urlencoded 对 body 的解析，保持 req 为原始流
-router.post('/:roomId/upload-proxy', roomAuthMiddleware, adminAuthMiddleware, uploadGuard, (req, res) =>
+router.post('/:roomId/upload-proxy', roomAuthMiddleware, uploadGuard, (req, res) =>
   RoomsController.proxyUpload(req, res),
 );
 
-// 本地模式：直接上传视频文件（需是房间管理员）
-router.put('/:roomId/upload', roomAuthMiddleware, adminAuthMiddleware, (req, res) =>
+// 本地模式：直接上传视频文件（房间所有成员均可上传）
+router.put('/:roomId/upload', roomAuthMiddleware, (req, res) =>
   RoomsController.uploadLocal(req, res),
 );
 

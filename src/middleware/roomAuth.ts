@@ -37,14 +37,3 @@ export function roomAuthMiddleware(req: Request, res: Response, next: NextFuncti
   req.isAdmin = member.is_admin === 1;
   next();
 }
-
-/**
- * 管理员鉴权中间件（需在 roomAuthMiddleware 之后使用）
- */
-export function adminAuthMiddleware(req: Request, res: Response, next: NextFunction): void {
-  if (!req.isAdmin) {
-    res.status(403).json({ code: 403, message: '仅管理员可操作', data: null });
-    return;
-  }
-  next();
-}

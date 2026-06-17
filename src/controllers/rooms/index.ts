@@ -10,13 +10,13 @@ import { addRoomVideo, getVideosByRoom, getRoomVideoById, updateDisplayName, del
 import { getTagsByRoomVideo, deleteTagsByVideo } from '../../database/tag/index.js';
 import { getLabelsByVideo, setLabelsForVideo, deleteLabelsByVideo } from '../../database/videoLabel/index.js';
 import { generateRoomId } from '../../utils/roomId.js';
-import { isOssEnabled, DEFAULT_AVATAR_URL } from '../../services/ossService.js';
+import { isOnlineMode, DEFAULT_AVATAR_URL } from '../../services/ossService.js';
 import { addDailyBytes } from '../../middleware/uploadGuard.js';
 import { transcodeToHls, generateM3u8 } from '../../services/hlsService.js';
 import { success, fail } from '../../utils/response.js';
 import { broadcast } from '../ws/registry.js';
 
-// ─── 本地存储配置（仅 isOssEnabled() === false 时使用）────────────────────────
+// ─── 本地存储配置（仅 isOnlineMode() === false 时使用）────────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const uploadsDir = path.resolve(__dirname, '../../../uploads');
 
@@ -297,13 +297,13 @@ export const RoomsController = {
   /**
    * GET /api/rooms/:roomId/upload-url
    *
-   * 废弃白名单直传分支，所有 OSS 模式统一返回 mode: 'proxy'。
+   * 废弃白名单直传分支，线上模式统一返回 mode: 'proxy'。
    *
-   * - 本地开发模式（isOssEnabled() === false）：
+   * - 本地模式（isOnlineMode() === false）：
    *     mode: 'local'，前端直传到后端本地
    *
-   * - OSS 模式（无论是否白名单）：
-   *     mode: 'proxy'，文件经后端中转写入 OSS，后端负责切片
+   * - 线上模式：
+   *     mode: 'proxy'，文件经后端中转写入 COS，后端负责切片
    */
   async getUploadUrl(req: Request, res: Response): Promise<void> {
     const { roomId } = req.params;
@@ -314,7 +314,7 @@ export const RoomsController = {
     const room = getRoomById(roomId);
     if (!room) { fail(res, 404, '房间不存在'); return; }
 
-    if (isOssEnabled()) {
+    if (isOnlineMode()) {
       const objectKey = `cowatch/${roomId}/${uuidv4()}-${fileName}`;
       success(res, {
         uploadUrl: `/api/rooms/${roomId}/upload-proxy?objectKey=${encodeURIComponent(objectKey)}&fileType=${encodeURIComponent(fileType)}&fileName=${encodeURIComponent(fileName)}`,
@@ -368,7 +368,7 @@ export const RoomsController = {
 
     writeStream.on('finish', () => {
       const realBytes = parseInt(req.headers['content-length'] ?? '0', 10);
-      if (realBytes > 0) addDailyBytes(userId, realBytes);
+      if (realBytes > 0) addDailyBytes(roomId, realBytes);
 
       // 写入 room_videos（hls_status 默认为 'pending'）
       const videoId = uuidv4();
@@ -411,7 +411,7 @@ export const RoomsController = {
             },
           });
         },
-        undefined, // uploadsDir：COS 模式不需要
+        undefined, // uploadsDir：线上模式不需要
         true,      // isTmpFile：切片完成后删除此临时文件
       );
     });

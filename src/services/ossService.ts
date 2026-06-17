@@ -5,18 +5,62 @@ import { fileURLToPath } from 'url';
 import COS from 'cos-nodejs-sdk-v5';
 
 /**
- * 判断是否配置了 COS 环境变量
+ * 必要的线上模式环境变量清单
  *
- * 本地开发不填 COS_* 变量，自动降级为本地文件存储模式。
- * 生产环境注入完整的 COS_* 变量后自动走 COS 模式。
+ * 缺少其中任意一项，服务将无法正确存储或分发视频，
+ * 必须在启动阶段 fatal exit（而非运行中悄悄降级）。
  */
-export function isOssEnabled(): boolean {
-  const { COS_REGION, COS_BUCKET, COS_SECRET_ID, COS_SECRET_KEY } = process.env;
-  return !!(COS_REGION && COS_BUCKET && COS_SECRET_ID && COS_SECRET_KEY);
+const ONLINE_REQUIRED_VARS = [
+  'COS_REGION',
+  'COS_BUCKET',
+  'COS_SECRET_ID',
+  'COS_SECRET_KEY',
+  'COS_BASE_URL',
+  'CDN_AUTH_KEY',
+] as const;
+
+/**
+ * 判断当前是否为线上模式（所有 COS/CDN 变量均已配置）
+ *
+ * 本地开发不填任何 COS_* / CDN_* 变量，自动使用本地文件存储 + /uploads 静态服务。
+ * 线上部署必须注入全部变量；如有缺失请调用 validateOnlineConfig() 尽早终止进程。
+ */
+export function isOnlineMode(): boolean {
+  return ONLINE_REQUIRED_VARS.every((v) => !!process.env[v]);
+}
+
+/**
+ * 线上模式配置完整性校验（在 app.ts 启动阶段调用）
+ *
+ * - 所有必要变量都存在 → 打印就绪日志
+ * - 任意一个缺失 → 列出缺失项并 process.exit(1)，阻止服务以错误配置启动
+ *
+ * 本地模式（所有变量均未配置）不触发此函数，保持静默通过。
+ */
+export function validateOnlineConfig(): void {
+  const present = ONLINE_REQUIRED_VARS.filter((v) => !!process.env[v]);
+  const missing = ONLINE_REQUIRED_VARS.filter((v) => !process.env[v]);
+
+  // 要么全有（线上模式），要么全没有（本地模式），中间状态属于配置异常
+  if (present.length === 0) {
+    console.log('[ossService] 🏠 本地模式：使用本地文件存储，跳过 COS/CDN 配置校验');
+    return;
+  }
+
+  if (missing.length > 0) {
+    console.error('[ossService] ❌ 配置异常：COS/CDN 变量必须全部配置或全部不配置，当前缺失：', missing.join(', '));
+    console.error('[ossService] 请补全所有线上模式所需变量后重新启动，服务即将退出。');
+    process.exit(1);
+  }
+
+  console.log('[ossService] ☁️  线上模式：COS + CDN 配置完整，服务正常启动');
 }
 
 /**
  * 判断是否配置了 static 桶环境变量（头像上传）
+ *
+ * static 桶与视频桶共用同一套 COS 凭证，
+ * 因此只要线上模式配置完整，static 桶也必然可用。
  */
 function isStaticOssEnabled(): boolean {
   const { COS_STATIC_BUCKET, COS_REGION, COS_SECRET_ID, COS_SECRET_KEY } = process.env;
@@ -74,7 +118,7 @@ function getClient(): COS {
  *   - CDN 回源 COS 时走私有存储桶访问（控制台已配置），无需 COS 签名
  *   - SW cache key：剥离 sign 参数（纯路径），同一视频签名轮换后仍命中缓存
  *
- * 【COS 直连模式】未配置 CDN_AUTH_KEY 时（本地开发 / 未接 CDN）
+ * 【本地模式】未配置 COS/CDN 变量时（本地开发）
  *   - 回退到 COS SDK 生成 q-sign-* 时效签名 URL
  *   - SW cache key：剥离 q-sign-* 参数
  *
@@ -89,7 +133,7 @@ export function getSignedUrl(
   const cdnBase = (process.env.COS_BASE_URL ?? '').replace(/\/$/, '');
   const cdnAuthKey = process.env.CDN_AUTH_KEY ?? '';
 
-  // ── CDN TypeA 鉴权模式 ──────────────────────────────────────────────────────
+  // ── 线上模式：CDN TypeA 鉴权签名 ────────────────────────────────────────────
   if (cdnBase && cdnAuthKey) {
     // TypeA 格式：{CDN_BASE}/{key}?sign={timestamp}-{rand}-{uid}-{md5hash}
     //   md5hash = md5("{key}{timestamp}{rand}{uid}{CDN_AUTH_KEY}")
@@ -109,7 +153,7 @@ export function getSignedUrl(
     return Promise.resolve(`${cdnBase}${pathname}?sign=${sign}`);
   }
 
-  // ── COS 直连模式（本地开发 / 未配置 CDN 鉴权密钥）─────────────────────────
+  // ── 本地模式：回退到 COS SDK 签名 URL（不应在线上出现，仅供本地调试）──────
   return new Promise((resolve, reject) => {
     getClient().getObjectUrl(
       {
@@ -124,6 +168,7 @@ export function getSignedUrl(
         if (err) { reject(err); return; }
         // 若配置了 CDN 域名但无鉴权密钥（不推荐），仍做域名替换
         if (cdnBase) {
+          // 配置了 CDN 域名但无鉴权密钥（不推荐，线上应始终同时配置二者）
           resolve(data.Url.replace(/^https?:\/\/[^/]+/, cdnBase));
         } else {
           resolve(data.Url);
@@ -166,8 +211,8 @@ function getStaticClient(): COS {
  * 默认头像 CDN 地址
  *
  * 由 COS_STATIC_URL 环境变量拼接生成（与头像上传路径保持一致）。
- * 本地开发需在 .env 中配置 COS_STATIC_URL，生产环境通过 CI/CD 平台注入。
- * 路径固定为 avatar/default/default.jpg（COS static 桶中的默认头像文件）。
+ * 本地模式下此值为空字符串前缀拼接，头像接口会走本地文件降级逻辑；
+ * 线上模式由 CI/CD 平台注入 COS_STATIC_URL。
  */
 export const DEFAULT_AVATAR_URL = `${(process.env.COS_STATIC_URL ?? '').replace(/\/$/, '')}/avatar/default/default.jpg`;
 
@@ -194,7 +239,7 @@ export async function uploadAvatar(
   const ts = Date.now();
 
   if (!isStaticOssEnabled()) {
-    // 本地开发降级：写入 uploads/avatar/{userId}/ 目录，走已有的 /uploads 静态服务
+    // 本地模式：写入 uploads/avatar/{userId}/ 目录，走已有的 /uploads 静态服务
     const __dirname = path.dirname(fileURLToPath(import.meta.url));
     const avatarDir = path.resolve(__dirname, `../../uploads/avatar/${userId}`);
     fs.mkdirSync(avatarDir, { recursive: true });
@@ -202,7 +247,7 @@ export async function uploadAvatar(
     fs.writeFileSync(path.join(avatarDir, fileName), buffer);
     // 本地服务地址（与 app.ts 中 /uploads 静态路由对应）
     const localBase = process.env.LOCAL_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3002}`;
-    console.log(`[ossService] 本地模式：头像写入 uploads/avatar/${userId}/${fileName}`);
+    console.log(`[ossService] 🏠 本地模式：头像写入 uploads/avatar/${userId}/${fileName}`);
     return `${localBase}/uploads/avatar/${userId}/${fileName}`;
   }
 
@@ -230,7 +275,7 @@ export async function uploadAvatar(
   if (staticCdnBase) {
     return `${staticCdnBase}/${objectKey}`;
   }
-  // fallback：未配置 CDN 域名时返回 COS 公网地址
+  // fallback：未配置 static CDN 域名时返回 COS 公网地址（线上不推荐，应配置 COS_STATIC_URL）
   const region = process.env.COS_REGION!;
   const bucket = process.env.COS_STATIC_BUCKET!;
   return `https://${bucket}.cos.${region}.myqcloud.com/${objectKey}`;
@@ -239,7 +284,7 @@ export async function uploadAvatar(
 // ─── HLS 切片相关 ──────────────────────────────────────────────────────────────
 
 /**
- * 上传单个 HLS .ts 片段到 COS
+ * 上传单个 HLS .ts 片段到 COS（仅线上模式调用）
  *
  * @param objectKey  目标 COS 对象键，如 cowatch/{roomId}/{uuid}/seg000.ts
  * @param filePath   本地临时文件绝对路径
@@ -269,7 +314,7 @@ export async function uploadHlsSegment(
 }
 
 /**
- * 生成 HLS .ts 片段的带时效签名 GET URL
+ * 生成 HLS .ts 片段的带时效签名 GET URL（线上模式 = CDN 签名，本地模式 = COS SDK 签名）
  *
  * 默认有效期 2 小时（覆盖复盘 session，跨天刷新时重新请求 m3u8 接口）。
  * 逻辑与 getSignedUrl 完全相同，仅默认有效期不同。
