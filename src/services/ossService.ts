@@ -15,6 +15,14 @@ export function isOssEnabled(): boolean {
   return !!(COS_REGION && COS_BUCKET && COS_SECRET_ID && COS_SECRET_KEY);
 }
 
+/**
+ * 判断是否配置了 static 桶环境变量（头像上传）
+ */
+function isStaticOssEnabled(): boolean {
+  const { COS_STATIC_BUCKET, COS_REGION, COS_SECRET_ID, COS_SECRET_KEY } = process.env;
+  return !!(COS_STATIC_BUCKET && COS_REGION && COS_SECRET_ID && COS_SECRET_KEY);
+}
+
 // ─── COS 客户端 ───────────────────────────────────────────────────────────────
 
 /**
@@ -28,6 +36,7 @@ export function isOssEnabled(): boolean {
 const COS_INTERNAL_REGION = 'ap-shanghai';
 
 let client: COS | null = null;
+let staticClient: COS | null = null;
 
 function getClient(): COS {
   if (!client) {
@@ -124,12 +133,43 @@ export function getSignedUrl(
   });
 }
 
+// ─── static 桶客户端 ──────────────────────────────────────────────────────────
+
+/**
+ * static 桶专用 COS 客户端
+ *
+ * 与视频桶共用同一对 SecretId/SecretKey（同账号 CAM 策略覆盖两个桶）。
+ * 桶名由 COS_STATIC_BUCKET 独立配置，地域复用 COS_REGION（两桶同地域）。
+ */
+function getStaticClient(): COS {
+  if (!staticClient) {
+    const region = process.env.COS_REGION ?? '';
+    if (region !== COS_INTERNAL_REGION) {
+      console.warn(
+        `[ossService] ⚠️  static 桶 COS_REGION="${region}" 与内网加速预期地域 "${COS_INTERNAL_REGION}" 不一致。`,
+      );
+    } else {
+      console.log(`[ossService] static 桶 COS 客户端初始化，地域=${region}，内网加速已启用`);
+    }
+    staticClient = new COS({
+      SecretId: process.env.COS_SECRET_ID!,
+      SecretKey: process.env.COS_SECRET_KEY!,
+      Domain: '{Bucket}.cos-internal.{Region}.tencentcos.cn',
+    });
+  }
+  return staticClient;
+}
+
 // ─── 头像上传 ──────────────────────────────────────────────────────────────────
 
 /**
- * 默认头像 CDN 地址（static 桶 public read，无需鉴权）
+ * 默认头像 CDN 地址
+ *
+ * 由 COS_STATIC_URL 环境变量拼接生成（与头像上传路径保持一致）。
+ * 本地开发需在 .env 中配置 COS_STATIC_URL，生产环境通过 CI/CD 平台注入。
+ * 路径固定为 avatar/default/default.jpg（COS static 桶中的默认头像文件）。
  */
-export const DEFAULT_AVATAR_URL = 'https://static.daibao.site/avatar/default/default.jpg';
+export const DEFAULT_AVATAR_URL = `${(process.env.COS_STATIC_URL ?? '').replace(/\/$/, '')}/avatar/default/default.jpg`;
 
 /**
  * 上传用户头像到 COS static 桶，并返回公开访问的 CDN URL
@@ -147,7 +187,7 @@ export async function uploadAvatar(
   buffer: Buffer,
   mimeType = 'image/jpeg',
 ): Promise<string> {
-  if (!isOssEnabled()) {
+  if (!isStaticOssEnabled()) {
     // 本地开发降级：写入 uploads/avatar/ 目录，走已有的 /uploads 静态服务
     const __dirname = path.dirname(fileURLToPath(import.meta.url));
     const avatarDir = path.resolve(__dirname, '../../uploads/avatar');
@@ -161,15 +201,12 @@ export async function uploadAvatar(
   }
 
   const objectKey = `avatar/${userId}.jpg`;
-  const cdnBase = (process.env.COS_BASE_URL ?? '').replace(/\/$/, '');
 
-  // static 桶：需要单独的 Bucket/Region 配置
-  // 若使用同一个桶，直接用现有 getClient()；若是独立 static 桶，需单独客户端
-  // 当前设计：头像与视频共用同一桶（cowatch-static），通过 objectKey 前缀区分目录
+  // static 桶独立客户端：桶名来自 COS_STATIC_BUCKET，地域复用 COS_REGION
   await new Promise<void>((resolve, reject) => {
-    getClient().putObject(
+    getStaticClient().putObject(
       {
-        Bucket: process.env.COS_BUCKET!,
+        Bucket: process.env.COS_STATIC_BUCKET!,
         Region: process.env.COS_REGION!,
         Key: objectKey,
         ContentType: mimeType,
@@ -182,13 +219,14 @@ export async function uploadAvatar(
     );
   });
 
-  // 头像是 public read，直接拼 CDN 域名即可，不需要签名
-  if (cdnBase) {
-    return `${cdnBase}/${objectKey}`;
+  // 头像桶 public read，直接拼 CDN 域名，不需要签名
+  const staticCdnBase = (process.env.COS_STATIC_URL ?? '').replace(/\/$/, '');
+  if (staticCdnBase) {
+    return `${staticCdnBase}/${objectKey}`;
   }
-  // fallback：无 CDN 域名时返回 COS 公网地址
+  // fallback：未配置 CDN 域名时返回 COS 公网地址
   const region = process.env.COS_REGION!;
-  const bucket = process.env.COS_BUCKET!;
+  const bucket = process.env.COS_STATIC_BUCKET!;
   return `https://${bucket}.cos.${region}.myqcloud.com/${objectKey}`;
 }
 
