@@ -1,12 +1,14 @@
 import { Router, Request, Response } from 'express';
 import authRouter from './auth/index.js';
 import roomsRouter from './rooms/index.js';
+import adminRouter from './admin/index.js';
 import { BatController } from '../controllers/bat/index.js';
 
 const router = Router();
 
 router.use('/auth', authRouter);
 router.use('/rooms', roomsRouter);
+router.use('/admin', adminRouter);
 
 // 下载转码脚本（无需鉴权）
 router.get('/bat', BatController.download);

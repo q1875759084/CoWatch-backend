@@ -1,5 +1,6 @@
 import { db } from './index.js';
 import { seedInviteCodes } from './inviteCode/index.js';
+import { initAdminUsersTable, seedAdminUsers } from './adminUser/index.js';
 
 /**
  * 初始化所有数据表（幂等，已存在则跳过）
@@ -105,10 +106,16 @@ export function initSchema(): void {
   // 跳过建表导致新增列永远不出现。每个 ALTER TABLE 单独 try/catch，互不影响。
   runMigrations();
 
+  // 初始化 admin_users 表（幂等）
+  initAdminUsersTable();
+
   console.log('✅ 数据库表初始化完成');
 
   // 初始化预置邀请码（同步，幂等）
   seedInviteCodes();
+
+  // 初始化预置 Admin 账号（幂等，已存在则跳过）
+  seedAdminUsers();
 }
 
 /**
@@ -143,6 +150,10 @@ function runMigrations(): void {
     {
       sql: "ALTER TABLE room_videos ADD COLUMN display_name TEXT",
       desc: 'room_videos.display_name（用户自定义展示名，NULL 时前端 fallback 到 file_name）',
+    },
+    {
+      sql: 'ALTER TABLE users ADD COLUMN is_banned INTEGER NOT NULL DEFAULT 0',
+      desc: 'users.is_banned（封号标记，0=正常，1=封号）',
     },
   ];
 

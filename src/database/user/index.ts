@@ -63,3 +63,24 @@ export function updateUserAvatar(userId: string, avatarUrl: string): void {
 export function updateUserNickname(userId: string, nickname: string): void {
   db.prepare('UPDATE users SET nickname = ? WHERE id = ?').run(nickname, userId);
 }
+
+/**
+ * 封号 / 解封
+ */
+export function banUser(userId: string, banned: boolean): void {
+  db.prepare('UPDATE users SET is_banned = ? WHERE id = ?').run(banned ? 1 : 0, userId);
+}
+
+/**
+ * 删除用户（级联：room_members / user_subscriptions 需调用方先清理，或由 FK ON DELETE CASCADE）
+ */
+export function deleteUser(userId: string): void {
+  db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+}
+
+/**
+ * 获取所有用户列表（Admin 用）
+ */
+export function getAllUsers(): UserRow[] {
+  return db.prepare('SELECT * FROM users ORDER BY created_at DESC').all() as UserRow[];
+}

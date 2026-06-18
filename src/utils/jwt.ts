@@ -14,6 +14,11 @@ export interface JwtPayload {
   userId: string;
 }
 
+export interface AdminJwtPayload {
+  adminId: string;
+  permissions: string[];
+}
+
 /**
  * 生成双 Token
  * - accessToken：短有效期（1h），存内存 + localStorage
@@ -32,4 +37,25 @@ export function generateTokens(userId: string): { accessToken: string; refreshTo
  */
 export function verifyToken(token: string): JwtPayload {
   return jwt.verify(token, CONFIRMED_SECRET) as unknown as JwtPayload;
+}
+
+/**
+ * 生成 Admin 双 Token（payload 含 permissions）
+ */
+export function generateAdminTokens(
+  adminId: string,
+  permissions: string[],
+): { accessToken: string; refreshToken: string } {
+  const payload: AdminJwtPayload = { adminId, permissions };
+  return {
+    accessToken: jwt.sign(payload, CONFIRMED_SECRET, { expiresIn: ACCESS_EXPIRES }),
+    refreshToken: jwt.sign(payload, CONFIRMED_SECRET, { expiresIn: REFRESH_EXPIRES }),
+  };
+}
+
+/**
+ * 校验并解析 Admin Token
+ */
+export function verifyAdminToken(token: string): AdminJwtPayload {
+  return jwt.verify(token, CONFIRMED_SECRET) as unknown as AdminJwtPayload;
 }
