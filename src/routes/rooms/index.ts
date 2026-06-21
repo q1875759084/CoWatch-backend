@@ -7,6 +7,10 @@ import { requirePlan } from '../../middleware/planGuard.js';
 
 const router = Router();
 
+// HLS 片段下载上报（无需鉴权：SW 线程拿不到 cookie，仅做成本统计）
+// 必须注册在 authMiddleware 之前，否则 cookie 缺失会被拦截
+router.post('/segment-view', (req, res) => RoomsController.reportSegmentView(req, res));
+
 // 所有房间接口都需要登录态
 router.use(authMiddleware);
 

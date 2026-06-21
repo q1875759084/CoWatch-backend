@@ -100,6 +100,22 @@ export function initSchema(): void {
       max_count   INTEGER NOT NULL DEFAULT 10,
       grant_plan  TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS segment_views (
+      id            TEXT PRIMARY KEY,
+      room_id       TEXT NOT NULL,
+      video_id      TEXT NOT NULL,
+      segment_name  TEXT NOT NULL,
+      user_id       TEXT NOT NULL,
+      bytes         INTEGER NOT NULL DEFAULT 0,
+      created_at    INTEGER NOT NULL,
+      FOREIGN KEY (room_id)  REFERENCES rooms(id),
+      FOREIGN KEY (video_id) REFERENCES room_videos(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_segment_views_room    ON segment_views (room_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_segment_views_video   ON segment_views (video_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_segment_views_user    ON segment_views (user_id, created_at);
   `);
 
   // 幂等补列迁移：对已存在的旧表自动补齐缺失的列，避免因 CREATE TABLE IF NOT EXISTS

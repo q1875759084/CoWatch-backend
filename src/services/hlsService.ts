@@ -201,11 +201,13 @@ export async function transcodeToHls(
  *
  * @param videoId    room_videos.id
  * @param uploadsDir 本地模式：uploads 目录的绝对路径
+ * @param userId     请求用户 ID，写入 CDN TypeA 签名的 uid 字段，用于流量归因统计
  * @returns         m3u8 文本字符串
  */
 export async function generateM3u8(
   videoId: string,
   uploadsDir?: string,
+  userId = '0',
 ): Promise<string> {
   const video = getRoomVideoById(videoId);
   if (!video) {
@@ -240,11 +242,11 @@ export async function generateM3u8(
     throw new Error('[hlsService] HLS 片段列表为空，切片可能不完整');
   }
 
-  // 为每个片段生成带签名的访问 URL
+  // 为每个片段生成带签名的访问 URL（线上模式写入 userId 到 CDN uid 字段，用于流量归因）
   const signedUrls = await Promise.all(
     segmentKeys.map((key) =>
       isOnlineMode()
-        ? getHlsSegmentSignedUrl(key)
+        ? getHlsSegmentSignedUrl(key, 2 * 3600, userId)
         : Promise.resolve(`/uploads/${key}`), // 本地模式直接走静态服务
     ),
   );

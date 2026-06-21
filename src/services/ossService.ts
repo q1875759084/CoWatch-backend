@@ -129,6 +129,7 @@ function getClient(): COS {
 export function getSignedUrl(
   objectKey: string,
   expireSeconds = 30 * 60,
+  userId = '0',
 ): Promise<string> {
   const cdnBase = (process.env.COS_BASE_URL ?? '').replace(/\/$/, '');
   const cdnAuthKey = process.env.CDN_AUTH_KEY ?? '';
@@ -142,7 +143,7 @@ export function getSignedUrl(
     // 注意：CDN 控制台里「有效时间」= 1800s，与后端 expireSeconds 保持一致即可，此处不叠加
     const timestamp = Math.floor(Date.now() / 1000);
     const rand = Math.random().toString(36).slice(2, 10); // 8 位随机串
-    const uid = '0';                                       // 固定 0，暂不启用用户体系
+    const uid = userId;                                    // 写入用户 ID，用于流量归因统计
     const pathname = `/${objectKey}`;
     // 腾讯云 CDN TypeA 签名公式（通过鉴权计算器逆向验证）：
     //   md5(path + "-" + timestamp + "-" + rand + "-" + uid + "-" + key)
@@ -322,8 +323,9 @@ export async function uploadHlsSegment(
 export function getHlsSegmentSignedUrl(
   objectKey: string,
   expireSeconds = 2 * 3600,
+  userId = '0',
 ): Promise<string> {
-  return getSignedUrl(objectKey, expireSeconds);
+  return getSignedUrl(objectKey, expireSeconds, userId);
 }
 
 /**
