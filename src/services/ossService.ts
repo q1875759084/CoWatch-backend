@@ -143,7 +143,7 @@ export function getSignedUrl(
     // 注意：CDN 控制台里「有效时间」= 1800s，与后端 expireSeconds 保持一致即可，此处不叠加
     const timestamp = Math.floor(Date.now() / 1000);
     const rand = Math.random().toString(36).slice(2, 10); // 8 位随机串
-    const uid = userId;                                    // 写入用户 ID，用于流量归因统计
+    const uid = '0';                                      // TypeA uid 字段固定为 0
     const pathname = `/${objectKey}`;
     // 腾讯云 CDN TypeA 签名公式（通过鉴权计算器逆向验证）：
     //   md5(path + "-" + timestamp + "-" + rand + "-" + uid + "-" + key)
@@ -151,7 +151,9 @@ export function getSignedUrl(
     const rawStr = `${pathname}-${timestamp}-${rand}-${uid}-${cdnAuthKey}`;
     const md5hash = createHash('md5').update(rawStr).digest('hex');
     const sign = `${timestamp}-${rand}-${uid}-${md5hash}`;
-    return Promise.resolve(`${cdnBase}${pathname}?sign=${sign}`);
+    // userId 作为独立 query 参数附加，不参与签名，CDN 透传，SW 直接读取用于流量归因
+    const uidParam = userId !== '0' ? `&uid=${encodeURIComponent(userId)}` : '';
+    return Promise.resolve(`${cdnBase}${pathname}?sign=${sign}${uidParam}`);
   }
 
   // ── 本地模式：回退到 COS SDK 签名 URL（不应在线上出现，仅供本地调试）──────

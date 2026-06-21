@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createRoom, getRoomById, setControllerId } from '../../database/room/index.js';
 import { joinRoom, getMembersByRoom, getRoomsByUser } from '../../database/roomMember/index.js';
 import { addRoomVideo, getVideosByRoom, getRoomVideoById, updateDisplayName, deleteRoomVideo } from '../../database/roomVideo/index.js';
-import { insertSegmentView } from '../../database/segmentView/index.js';
+import { insertSegmentViewBatch, type SegmentViewInput } from '../../database/segmentView/index.js';
 import { getTagsByRoomVideo, deleteTagsByVideo } from '../../database/tag/index.js';
 import { getLabelsByVideo, setLabelsForVideo, deleteLabelsByVideo } from '../../database/videoLabel/index.js';
 import { generateRoomId } from '../../utils/roomId.js';
@@ -497,35 +497,52 @@ export const RoomsController = {
 
   /**
    * POST /api/rooms/segment-view
-   * 上报一次 HLS 片段的真实 CDN 下载记录（缓存未命中触发）。
+   * 批量上报 HLS 片段的真实 CDN 下载记录（缓存未命中触发）。
    *
-   * 由 Service Worker 在缓存未命中后异步调用，不阻塞播放。
+   * 由 Service Worker 在缓存未命中后批量调用（满 10 条或 3 秒 flush 一次），
+   * 单事务写入，减少 SQLite 写锁竞争次数。
+   *
    * 此接口无需用户鉴权：
    *   - SW 运行在独立线程，拿不到 HttpOnly cookie
    *   - 上报数据仅用于成本统计，不涉及写权限
-   *   - userId 由前端传入（从 localStorage 读取），可信度由业务自行评估
+   *
+   * Body：{ items: Array<{ roomId, videoId, segmentName, userId, bytes }> }
+   * 单次最多 50 条，超出截断，避免超大 payload。
    */
   async reportSegmentView(req: Request, res: Response): Promise<void> {
-    const { roomId, videoId, segmentName, userId = 'anonymous', bytes = 0 } =
-      req.body as {
-        roomId?: string;
-        videoId?: string;
-        segmentName?: string;
-        userId?: string;
-        bytes?: number;
-      };
+    const { items } = req.body as { items?: unknown[] };
 
-    if (!roomId || !videoId || !segmentName) {
-      fail(res, 400, '缺少必要字段：roomId / videoId / segmentName');
+    if (!Array.isArray(items) || items.length === 0) {
+      fail(res, 400, 'items 必须为非空数组');
       return;
     }
 
+    // 校验并提取合法记录，单次上限 50 条
+    const validItems: SegmentViewInput[] = [];
+    for (const item of items.slice(0, 50)) {
+      const { roomId, videoId, segmentName, userId = 'anonymous', bytes = 0 } =
+        item as Record<string, unknown>;
+      if (
+        typeof roomId === 'string' && roomId &&
+        typeof videoId === 'string' && videoId &&
+        typeof segmentName === 'string' && segmentName
+      ) {
+        validItems.push({
+          roomId,
+          videoId,
+          segmentName,
+          userId: typeof userId === 'string' ? userId : 'anonymous',
+          bytes: Number(bytes) || 0,
+        });
+      }
+    }
+
     try {
-      insertSegmentView(roomId, videoId, segmentName, userId, Number(bytes) || 0);
+      insertSegmentViewBatch(validItems);
       success(res, null);
     } catch (err) {
-      // 上报失败不影响业务，记录日志后返回 200，避免 SW 重试风暴
-      console.error('[reportSegmentView] 写入失败', err);
+      // 上报失败不影响业务，静默返回 200，避免 SW 重试风暴
+      console.error('[reportSegmentView] 批量写入失败', err);
       success(res, null);
     }
   },
