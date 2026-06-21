@@ -7,7 +7,6 @@ import { getRoomMember, getAdminByRoom, getMembersByRoom } from '../database/roo
 import { getRoomById, setControllerId, setVideoUrl } from '../database/room/index.js';
 import { getVideosByRoom, getVideoIdByObjectKey } from '../database/roomVideo/index.js';
 import { addTag, deleteTag } from '../database/tag/index.js';
-import { getLabelsByVideo } from '../database/videoLabel/index.js';
 import { getUserById } from '../database/user/index.js';
 import { addClient, removeClient, broadcast, broadcastExcept, sendToClient, getOnlineUserIds } from '../controllers/ws/registry.js';
 
@@ -130,9 +129,6 @@ export function initWsServer(httpServer: Server): WebSocketServer {
       data: { userId, nickname, isAdmin: member.is_admin === 1, isOnline: true },
     });
 
-    // 进房间时视频列表只下发 objectKey，不签名。
-    // 播放 URL 在用户点击播放（SWITCH_VIDEO）时由后端实时签名后广播。
-    const existingVideos = getVideosByRoom(roomId);
     const currentMembers = getMembersByRoom(roomId);
     // addClient 已在上方执行，所以 onlineIds 包含当前新加入的用户自己
     const onlineIds = getOnlineUserIds(roomId);
@@ -141,12 +137,17 @@ export function initWsServer(httpServer: Server): WebSocketServer {
     // 若当前房间已有激活视频，生成 m3u8 API 路径告知新成员
     const activeObjectKey = room.video_url ?? null;
     const currentVideoUrl = activeObjectKey ? toPlayUrl(roomId, activeObjectKey) : null;
+    // 通过 objectKey 查出 activeVideoId，直接下发给前端，避免前端做 objectKey→videoId 的本地匹配
+    const allVideos = getVideosByRoom(roomId);
+    const activeVideo = activeObjectKey ? allVideos.find((v) => v.video_url === activeObjectKey) : null;
     sendToClient(roomId, userId, {
       type: 'ROOM_STATE',
       data: {
         // 若有激活视频，下发 m3u8 API 路径；否则为 null（进房间时尚无人播放）
         videoUrl: currentVideoUrl,
         activeObjectKey,
+        // 直接下发 videoId，前端无需通过 objectKey 在本地视频列表中做匹配
+        activeVideoId: activeVideo?.id ?? null,
         controlMode: room.control_mode,
         controllerId: room.controller_id,
         // 下发当前播放状态，新加入成员可直接同步
@@ -158,17 +159,6 @@ export function initWsServer(httpServer: Server): WebSocketServer {
         noteContent: roomNote.get(roomId) ?? '',
         // 下发最近聊天消息，新成员加入时初始化
         chatMessages: roomChat.get(roomId) ?? [],
-        // 视频列表含 objectKey 和 hlsStatus，videoUrl 为 null（切换视频后才有值）
-        videos: existingVideos.map((v) => ({
-          id: v.id,
-          objectKey: v.video_url,
-          videoUrl: null,
-          fileName: v.file_name,
-          uploaderId: v.uploader_id,
-          createdAt: v.created_at,
-          hlsStatus: v.hls_status,
-          labels: getLabelsByVideo(v.id),
-        })),
         // 下发当前房间内所有成员（含在线状态）
         members: currentMembers.map((m) => ({
           userId: m.user_id,
@@ -176,8 +166,6 @@ export function initWsServer(httpServer: Server): WebSocketServer {
           isAdmin: m.is_admin === 1,
           isOnline: onlineIds.has(m.user_id),
         })),
-        // tags 不随 ROOM_STATE 下发（点击播放后按需拉取）
-        tags: [],
       },
     });
 
@@ -450,12 +438,14 @@ export function initWsServer(httpServer: Server): WebSocketServer {
           const syncActiveObjectKey = freshRoomForSync.video_url ?? null;
           const syncVideoUrl = syncActiveObjectKey ? toPlayUrl(roomId, syncActiveObjectKey) : null;
           const syncVideos = getVideosByRoom(roomId);
+          const syncActiveVideo = syncActiveObjectKey ? syncVideos.find((v) => v.video_url === syncActiveObjectKey) : null;
           const syncMembers = getMembersByRoom(roomId);
           const syncOnlineIds = getOnlineUserIds(roomId);
 
           const roomStateData = {
             videoUrl: syncVideoUrl,
             activeObjectKey: syncActiveObjectKey,
+            activeVideoId: syncActiveVideo?.id ?? null,
             controlMode: freshRoomForSync.control_mode,
             controllerId: freshRoomForSync.controller_id,
             isPlaying: syncPlayback.isPlaying,
@@ -463,23 +453,12 @@ export function initWsServer(httpServer: Server): WebSocketServer {
             strokes: roomStrokes.get(roomId) ?? [],
             noteContent: roomNote.get(roomId) ?? '',
             chatMessages: roomChat.get(roomId) ?? [],
-            videos: syncVideos.map((v) => ({
-              id: v.id,
-              objectKey: v.video_url,
-              videoUrl: null,
-              fileName: v.file_name,
-              uploaderId: v.uploader_id,
-              createdAt: v.created_at,
-              hlsStatus: v.hls_status,
-              labels: getLabelsByVideo(v.id),
-            })),
             members: syncMembers.map((m) => ({
               userId: m.user_id,
               nickname: m.nickname,
               isAdmin: m.is_admin === 1,
               isOnline: syncOnlineIds.has(m.user_id),
             })),
-            tags: [],
           };
 
           const isController = canControl(userId, freshRoomForSync);
