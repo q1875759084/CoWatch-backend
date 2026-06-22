@@ -16,6 +16,16 @@ const sql = postgres(DATABASE_URL, {
   idle_timeout: 30,   // 闲置 30s 后释放连接
   connect_timeout: 10,
   onnotice: () => {}, // 屏蔽 NOTICE 日志（migrate 阶段 IF NOT EXISTS 会产生）
+  // BIGINT (OID 20) 默认返回 string（防止精度丢失），但项目所有 BIGINT 均为
+  // 毫秒时间戳（< 2^53），安全转为 JS number，保持与旧 SQLite 接口一致。
+  types: {
+    bigint: {
+      to: 20,
+      from: [20],
+      parse: (x: string) => Number(x),
+      serialize: (x: number) => String(x),
+    },
+  },
 });
 
 console.log('✅ PostgreSQL 连接池已初始化');
