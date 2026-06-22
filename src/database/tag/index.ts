@@ -1,4 +1,4 @@
-import { db } from '../index.js';
+import sql from '../index.js';
 
 export interface TagRow {
   id: string;
@@ -10,51 +10,39 @@ export interface TagRow {
   created_at: number;
 }
 
-/**
- * 新增一条 Tag
- */
-export function addTag(
+export async function addTag(
   id: string,
   roomId: string,
   videoId: string,
   time: number,
   label: string,
   createdBy: string,
-): TagRow {
+): Promise<TagRow> {
   const now = Date.now();
-  db.prepare(`
+  const [row] = await sql`
     INSERT INTO tags (id, room_id, video_id, time, label, created_by, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(id, roomId, videoId, time, label, createdBy, now);
-  return getTagById(id)!;
+    VALUES (${id}, ${roomId}, ${videoId}, ${time}, ${label}, ${createdBy}, ${now})
+    RETURNING *
+  `;
+  return row as unknown as TagRow;
 }
 
-/**
- * 按主键查询
- */
-export function getTagById(id: string): TagRow | null {
-  return (db.prepare('SELECT * FROM tags WHERE id = ?').get(id) as TagRow) ?? null;
+export async function deleteTag(id: string, roomId: string): Promise<boolean> {
+  const result = await sql`
+    DELETE FROM tags WHERE id = ${id} AND room_id = ${roomId}
+  `;
+  return result.count > 0;
 }
 
-/**
- * 删除一条 Tag
- */
-export function deleteTag(id: string): void {
-  db.prepare('DELETE FROM tags WHERE id = ?').run(id);
+export async function getTagsByRoomVideo(roomId: string, videoId: string): Promise<TagRow[]> {
+  const rows = await sql`
+    SELECT * FROM tags
+    WHERE room_id = ${roomId} AND video_id = ${videoId}
+    ORDER BY time ASC
+  `;
+  return rows as unknown as TagRow[];
 }
 
-/**
- * 获取房间内某视频的所有 Tag（按时间升序）
- */
-export function getTagsByRoomVideo(roomId: string, videoId: string): TagRow[] {
-  return db.prepare(`
-    SELECT * FROM tags WHERE room_id = ? AND video_id = ? ORDER BY time ASC
-  `).all(roomId, videoId) as TagRow[];
-}
-
-/**
- * 批量删除某视频的所有 Tag（删除视频时级联调用）
- */
-export function deleteTagsByVideo(videoId: string): void {
-  db.prepare('DELETE FROM tags WHERE video_id = ?').run(videoId);
+export async function deleteTagsByVideo(videoId: string): Promise<void> {
+  await sql`DELETE FROM tags WHERE video_id = ${videoId}`;
 }

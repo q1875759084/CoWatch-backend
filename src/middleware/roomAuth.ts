@@ -28,12 +28,17 @@ export function roomAuthMiddleware(req: Request, res: Response, next: NextFuncti
     return;
   }
 
-  const member = getRoomMember(userId, roomId);
-  if (!member) {
-    res.status(403).json({ code: 403, message: '无权限访问该房间', data: null });
-    return;
-  }
-
-  req.isAdmin = member.is_admin === 1;
-  next();
+  getRoomMember(userId, roomId)
+    .then((member) => {
+      if (!member) {
+        res.status(403).json({ code: 403, message: '无权限访问该房间', data: null });
+        return;
+      }
+      req.isAdmin = member.is_admin === 1;
+      next();
+    })
+    .catch((err) => {
+      console.error('[roomAuthMiddleware]', err);
+      res.status(500).json({ code: 500, message: '鉴权失败', data: null });
+    });
 }

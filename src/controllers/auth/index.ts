@@ -83,9 +83,9 @@ export const AuthController = {
    * GET /api/auth/profile
    * 获取当前用户信息（需登录态）
    */
-  profile(req: Request, res: Response): void {
+  async profile(req: Request, res: Response): Promise<void> {
     try {
-      const userInfo = getUserProfile(req.userId!);
+      const userInfo = await getUserProfile(req.userId!);
       success(res, { userInfo });
     } catch (err: unknown) {
       fail(res, 400, err instanceof Error ? err.message : '获取用户信息失败');
@@ -95,10 +95,6 @@ export const AuthController = {
   /**
    * POST /api/auth/avatar
    * 上传用户头像（multipart/form-data，字段名 avatar，需登录态）
-   *
-   * 限制：
-   * - 文件大小：≤ 2MB（由 multer limits 控制）
-   * - 格式：jpg / png / webp（由 multer fileFilter 控制）
    */
   async uploadAvatar(req: Request, res: Response): Promise<void> {
     const file = req.file;
@@ -118,14 +114,14 @@ export const AuthController = {
    * PUT /api/auth/nickname
    * 修改昵称（需登录态，Body: { nickname: string }）
    */
-  updateNickname(req: Request, res: Response): void {
+  async updateNickname(req: Request, res: Response): Promise<void> {
     const { nickname } = req.body as { nickname?: string };
     if (!nickname) {
       fail(res, 400, '昵称不能为空');
       return;
     }
     try {
-      const trimmed = changeUserNickname(req.userId!, nickname);
+      const trimmed = await changeUserNickname(req.userId!, nickname);
       success(res, { nickname: trimmed }, '昵称修改成功');
     } catch (err: unknown) {
       fail(res, 400, err instanceof Error ? err.message : '昵称修改失败');

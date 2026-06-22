@@ -1,24 +1,23 @@
-import Database from 'better-sqlite3';
-import path from 'path';
-import fs from 'fs';
+import postgres from 'postgres';
 
-// 数据库文件路径：生产通过 Docker Volume 挂载到 /app/database/
-// 本地开发存放在项目根目录
-const DB_DIR = process.env.NODE_ENV === 'production'
-  ? '/app/database'
-  : path.resolve(process.cwd(), 'database');
+/**
+ * PostgreSQL 连接池单例
+ *
+ * 连接字符串优先读取环境变量 DATABASE_URL，本地开发 fallback 到默认值。
+ * docker-compose 内部通过服务名 "postgres" 访问：
+ *   postgresql://cowatch:<password>@postgres:5432/cowatch
+ */
+const DATABASE_URL =
+  process.env.DATABASE_URL ??
+  'postgresql://cowatch:dev@localhost:5432/cowatch';
 
-if (!fs.existsSync(DB_DIR)) {
-  fs.mkdirSync(DB_DIR, { recursive: true });
-}
+const sql = postgres(DATABASE_URL, {
+  max: 10,            // 连接池大小，单机低并发足够
+  idle_timeout: 30,   // 闲置 30s 后释放连接
+  connect_timeout: 10,
+  onnotice: () => {}, // 屏蔽 NOTICE 日志（migrate 阶段 IF NOT EXISTS 会产生）
+});
 
-const DB_PATH = path.join(DB_DIR, 'cowatch.sqlite3');
+console.log('✅ PostgreSQL 连接池已初始化');
 
-export const db = new Database(DB_PATH);
-
-// 开启 WAL 模式：提升并发读写性能
-db.pragma('journal_mode = WAL');
-// 开启外键约束
-db.pragma('foreign_keys = ON');
-
-console.log(`✅ SQLite 数据库已连接：${DB_PATH}`);
+export default sql;

@@ -26,7 +26,7 @@ export const AdminAuthController = {
       return;
     }
 
-    const admin = getAdminUserByUsername(username);
+    const admin = await getAdminUserByUsername(username);
     if (!admin) {
       fail(res, 401, '用户名或密码错误');
       return;
@@ -51,7 +51,7 @@ export const AdminAuthController = {
    * POST /api/admin/auth/refresh
    * 无感刷新：从 HttpOnly Cookie 取 admin_refresh_token，返回新 accessToken
    */
-  refresh(req: Request, res: Response): void {
+  async refresh(req: Request, res: Response): Promise<void> {
     const refreshToken = req.cookies?.[ADMIN_REFRESH_COOKIE] as string | undefined;
     if (!refreshToken) {
       fail(res, 401, '未提供刷新凭证，请重新登录');
@@ -59,7 +59,7 @@ export const AdminAuthController = {
     }
     try {
       const payload = verifyAdminToken(refreshToken);
-      const admin = getAdminUserById(payload.adminId);
+      const admin = await getAdminUserById(payload.adminId);
       if (!admin) {
         fail(res, 401, 'Admin 账号不存在');
         return;

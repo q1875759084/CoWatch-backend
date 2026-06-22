@@ -164,8 +164,8 @@ export async function transcodeToHls(
       console.log(`[hlsService] 本地切片完成: ${hlsLocalDir}`);
     }
 
-    // 6. 更新 DB 状态
-    updateHlsStatus(videoId, hlsPrefix, 'done');
+    // 6. 更新 DB 状态（异步）
+    await updateHlsStatus(videoId, 'ready', hlsPrefix);
     console.log(`[hlsService] 视频 ${videoId} 切片完成，hlsPrefix=${hlsPrefix}`);
 
     // 7. 通知调用方广播 VIDEO_ADDED
@@ -174,7 +174,7 @@ export async function transcodeToHls(
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
     console.error(`[hlsService] 视频 ${videoId} 切片失败：`, error.message);
-    updateHlsStatus(videoId, '', 'error');
+    await updateHlsStatus(videoId, 'error').catch(() => {});
     onError(error);
   } finally {
     // 清理切片临时目录（本地模式下 .ts 已 rename 走，tmpDir 为空；线上模式下需清理）
@@ -209,14 +209,14 @@ export async function generateM3u8(
   uploadsDir?: string,
   userId = '0',
 ): Promise<string> {
-  const video = getRoomVideoById(videoId);
+  const video = await getRoomVideoById(videoId);
   if (!video) {
     const err = new Error(`视频不存在: ${videoId}`);
     (err as NodeJS.ErrnoException).code = '404';
     throw err;
   }
 
-  if (video.hls_status !== 'done' || !video.hls_prefix) {
+  if (video.hls_status !== 'ready' || !video.hls_prefix) {
     const err = new Error('视频切片尚未完成，请稍候');
     (err as NodeJS.ErrnoException).code = '425';
     throw err;

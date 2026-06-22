@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { db } from '../../database/index.js';
+import sql from '../../database/index.js';
 import { success } from '../../utils/response.js';
 
 interface RoomWithStats {
@@ -25,7 +25,7 @@ export const AdminRoomsController = {
    * 流量来源：segment_views 表（由 SW 缓存未命中时上报）
    * 时间边界均为本地时间零点/月初，字节数为 SUM(bytes)。
    */
-  list(_req: Request, res: Response): void {
+  async list(_req: Request, res: Response): Promise<void> {
     const now = Date.now();
 
     // 今日零点（本地时间）
@@ -40,23 +40,23 @@ export const AdminRoomsController = {
       return d.getTime();
     })();
 
-    const rows = db.prepare(`
+    const rows = await sql<RoomWithStats[]>`
       SELECT
         r.id,
         r.name,
         r.video_url,
         r.created_at,
         r.updated_at,
-        COUNT(DISTINCT rm.user_id) AS member_count,
-        COALESCE(SUM(CASE WHEN sv.created_at >= :monthStart THEN sv.bytes ELSE 0 END), 0) AS traffic_month,
-        COALESCE(SUM(CASE WHEN sv.created_at >= :day7Start  THEN sv.bytes ELSE 0 END), 0) AS traffic_7d,
-        COALESCE(SUM(CASE WHEN sv.created_at >= :todayStart THEN sv.bytes ELSE 0 END), 0) AS traffic_today
+        COUNT(DISTINCT rm.user_id)::int AS member_count,
+        COALESCE(SUM(CASE WHEN sv.created_at >= ${monthStart} THEN sv.bytes ELSE 0 END), 0)::bigint AS traffic_month,
+        COALESCE(SUM(CASE WHEN sv.created_at >= ${day7Start}  THEN sv.bytes ELSE 0 END), 0)::bigint AS traffic_7d,
+        COALESCE(SUM(CASE WHEN sv.created_at >= ${todayStart} THEN sv.bytes ELSE 0 END), 0)::bigint AS traffic_today
       FROM rooms r
       LEFT JOIN room_members  rm ON rm.room_id = r.id
       LEFT JOIN segment_views sv ON sv.room_id  = r.id
       GROUP BY r.id
       ORDER BY r.created_at DESC
-    `).all({ monthStart, day7Start, todayStart }) as RoomWithStats[];
+    `;
 
     success(res, { rooms: rows });
   },

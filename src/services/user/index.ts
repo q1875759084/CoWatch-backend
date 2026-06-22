@@ -58,30 +58,30 @@ export async function registerUser(
   }
 
   // ── 邀请码校验 ────────────────────────────────────────────────────────────
-  const codeRow = getInviteCode(inviteCode.trim());
+  const codeRow = await getInviteCode(inviteCode.trim());
   if (!codeRow) {
     throw new Error('邀请码无效或已被使用完毕');
   }
 
   // ── 账号名查重 ────────────────────────────────────────────────────────────
-  if (checkUsernameExists(username)) {
+  if (await checkUsernameExists(username)) {
     throw new Error('账号名已存在');
   }
 
   // ── 创建用户 ──────────────────────────────────────────────────────────────
   const passwordHash = await bcrypt.hash(password, 10);
   const userId = uuidv4();
-  const user = createUser({ id: userId, username, password_hash: passwordHash, nickname: username });
+  const user = await createUser({ id: userId, username, password_hash: passwordHash, nickname: username });
 
   // ── 核销邀请码 ────────────────────────────────────────────────────────────
-  consumeInviteCode(inviteCode.trim());
+  await consumeInviteCode(inviteCode.trim());
 
   // ── 按需写入订阅 ──────────────────────────────────────────────────────────
   if (codeRow.grant_plan) {
-    addSubscription(userId, codeRow.grant_plan);
+    await addSubscription(userId, codeRow.grant_plan);
   }
 
-  const plans = getActivePlans(userId);
+  const plans = await getActivePlans(userId);
   const { accessToken, refreshToken } = generateTokens(user.id);
   return {
     userInfo: {
@@ -104,7 +104,7 @@ export async function loginUser(username: string, password: string): Promise<Aut
     throw new Error('账号和密码不能为空');
   }
 
-  const user = getUserByUsername(username);
+  const user = await getUserByUsername(username);
   if (!user) {
     throw new Error('账号不存在');
   }
@@ -114,7 +114,7 @@ export async function loginUser(username: string, password: string): Promise<Aut
     throw new Error('密码错误');
   }
 
-  const plans = getActivePlans(user.id);
+  const plans = await getActivePlans(user.id);
   const { accessToken, refreshToken } = generateTokens(user.id);
   return {
     userInfo: {
@@ -134,7 +134,7 @@ export async function loginUser(username: string, password: string): Promise<Aut
  */
 export async function refreshUserToken(refreshToken: string): Promise<{ accessToken: string; refreshToken: string }> {
   const payload = verifyToken(refreshToken);
-  const user = getUserById(payload.userId);
+  const user = await getUserById(payload.userId);
   if (!user) throw new Error('用户不存在');
   return generateTokens(user.id);
 }
@@ -142,10 +142,10 @@ export async function refreshUserToken(refreshToken: string): Promise<{ accessTo
 /**
  * 获取用户公开信息（含有效 plans）
  */
-export function getUserProfile(userId: string): UserPublicInfo {
-  const user = getUserById(userId);
+export async function getUserProfile(userId: string): Promise<UserPublicInfo> {
+  const user = await getUserById(userId);
   if (!user) throw new Error('用户不存在');
-  const plans = getActivePlans(userId);
+  const plans = await getActivePlans(userId);
   return {
     userId: user.id,
     username: user.username,
@@ -155,40 +155,36 @@ export function getUserProfile(userId: string): UserPublicInfo {
   };
 }
 
-/**
- * 上传用户头像：COS 写入 → DB 更新 → 返回新头像 URL
- *
- * @param userId   当前登录用户 ID
- * @param buffer   图片 Buffer（前端 FormData 上传，multer 已解析）
- * @param mimeType 图片 MIME 类型
- */
 /** 昵称最大长度 */
 const NICKNAME_MAX_LEN = 20;
 
 /**
  * 修改用户昵称
  */
-export function changeUserNickname(userId: string, nickname: string): string {
+export async function changeUserNickname(userId: string, nickname: string): Promise<string> {
   const trimmed = nickname.trim();
   if (!trimmed) throw new Error('昵称不能为空');
   if (trimmed.length > NICKNAME_MAX_LEN) throw new Error(`昵称不能超过 ${NICKNAME_MAX_LEN} 个字符`);
 
-  const user = getUserById(userId);
+  const user = await getUserById(userId);
   if (!user) throw new Error('用户不存在');
 
-  updateUserNickname(userId, trimmed);
+  await updateUserNickname(userId, trimmed);
   return trimmed;
 }
 
+/**
+ * 上传用户头像：COS 写入 → DB 更新 → 返回新头像 URL
+ */
 export async function uploadUserAvatar(
   userId: string,
   buffer: Buffer,
   mimeType: string,
 ): Promise<string> {
-  const user = getUserById(userId);
+  const user = await getUserById(userId);
   if (!user) throw new Error('用户不存在');
 
   const avatarUrl = await uploadAvatar(userId, buffer, mimeType);
-  updateUserAvatar(userId, avatarUrl);
+  await updateUserAvatar(userId, avatarUrl);
   return avatarUrl;
 }

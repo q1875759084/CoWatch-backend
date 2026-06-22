@@ -1,4 +1,4 @@
-import { db } from '../index.js';
+import sql from '../index.js';
 
 export interface UserRow {
   id: string;
@@ -10,77 +10,83 @@ export interface UserRow {
   is_upload_whitelist: number;
   /** 用户头像 URL；NULL 表示使用默认头像 */
   avatar_url: string | null;
+  is_banned: number;
 }
 
 /**
  * 创建用户（注册专用）
  */
-export function createUser(user: {
+export async function createUser(user: {
   id: string;
   username: string;
   password_hash: string;
   nickname: string;
-}): UserRow {
+}): Promise<UserRow> {
   const now = Date.now();
-  db.prepare(`
+  const [row] = await sql`
     INSERT INTO users (id, username, password_hash, nickname, created_at)
-    VALUES (@id, @username, @password_hash, @nickname, @created_at)
-  `).run({ ...user, created_at: now });
-  return getUserById(user.id)!;
+    VALUES (${user.id}, ${user.username}, ${user.password_hash}, ${user.nickname}, ${now})
+    RETURNING *
+  `;
+  return row as UserRow;
 }
 
 /**
  * 根据 ID 查询用户
  */
-export function getUserById(id: string): UserRow | null {
-  return (db.prepare('SELECT * FROM users WHERE id = ?').get(id) as UserRow) ?? null;
+export async function getUserById(id: string): Promise<UserRow | null> {
+  const [row] = await sql`SELECT * FROM users WHERE id = ${id}`;
+  return (row as UserRow) ?? null;
 }
 
 /**
  * 根据用户名查询用户（登录专用）
  */
-export function getUserByUsername(username: string): UserRow | null {
-  return (db.prepare('SELECT * FROM users WHERE username = ?').get(username) as UserRow) ?? null;
+export async function getUserByUsername(username: string): Promise<UserRow | null> {
+  const [row] = await sql`SELECT * FROM users WHERE username = ${username}`;
+  return (row as UserRow) ?? null;
 }
 
 /**
  * 检查用户名是否已存在
  */
-export function checkUsernameExists(username: string): boolean {
-  return !!db.prepare('SELECT 1 FROM users WHERE username = ?').get(username);
+export async function checkUsernameExists(username: string): Promise<boolean> {
+  const [row] = await sql`SELECT 1 FROM users WHERE username = ${username}`;
+  return !!row;
 }
 
 /**
  * 更新用户头像 URL
  */
-export function updateUserAvatar(userId: string, avatarUrl: string): void {
-  db.prepare('UPDATE users SET avatar_url = ? WHERE id = ?').run(avatarUrl, userId);
+export async function updateUserAvatar(userId: string, avatarUrl: string): Promise<void> {
+  await sql`UPDATE users SET avatar_url = ${avatarUrl} WHERE id = ${userId}`;
 }
 
 /**
  * 更新用户昵称
  */
-export function updateUserNickname(userId: string, nickname: string): void {
-  db.prepare('UPDATE users SET nickname = ? WHERE id = ?').run(nickname, userId);
+export async function updateUserNickname(userId: string, nickname: string): Promise<void> {
+  await sql`UPDATE users SET nickname = ${nickname} WHERE id = ${userId}`;
 }
 
 /**
  * 封号 / 解封
  */
-export function banUser(userId: string, banned: boolean): void {
-  db.prepare('UPDATE users SET is_banned = ? WHERE id = ?').run(banned ? 1 : 0, userId);
+export async function banUser(userId: string, banned: boolean): Promise<void> {
+  await sql`UPDATE users SET is_banned = ${banned ? 1 : 0} WHERE id = ${userId}`;
 }
 
 /**
- * 删除用户（级联：room_members / user_subscriptions 需调用方先清理，或由 FK ON DELETE CASCADE）
+ * 删除用户
  */
-export function deleteUser(userId: string): void {
-  db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+export async function deleteUser(userId: string): Promise<void> {
+  await sql`DELETE FROM users WHERE id = ${userId}`;
 }
 
 /**
  * 获取所有用户列表（Admin 用）
  */
-export function getAllUsers(): UserRow[] {
-  return db.prepare('SELECT * FROM users ORDER BY created_at DESC').all() as UserRow[];
+export async function getAllUsers(): Promise<UserRow[]> {
+  const rows = await sql`SELECT * FROM users ORDER BY created_at DESC`;
+  return rows as unknown as UserRow[];
 }

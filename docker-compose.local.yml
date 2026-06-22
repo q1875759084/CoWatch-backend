@@ -1,0 +1,21 @@
+# 本地开发用 PostgreSQL 容器（不包含前/后端服务）
+# 用法：docker compose -f docker-compose.local.yml up -d
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"     # 映射到宿主机，供本地 tsx/nodemon 直连
+    environment:
+      - POSTGRES_USER=cowatch
+      - POSTGRES_PASSWORD=dev
+      - POSTGRES_DB=cowatch
+    volumes:
+      - cowatch-pgdata-local:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cowatch -d cowatch"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  cowatch-pgdata-local:

@@ -43,16 +43,16 @@ export const RoomsController = {
     let roomId = '';
     for (let i = 0; i < 5; i++) {
       const candidate = generateRoomId();
-      if (!getRoomById(candidate)) { roomId = candidate; break; }
+      if (!await getRoomById(candidate)) { roomId = candidate; break; }
     }
     if (!roomId) {
       fail(res, 500, '房间码生成失败，请重试');
       return;
     }
 
-    const room = createRoom(roomId, name.trim());
-    joinRoom(userId, roomId, true);
-    setControllerId(roomId, userId);
+    const room = await createRoom(roomId, name.trim());
+    await joinRoom(userId, roomId, true);
+    await setControllerId(roomId, userId);
 
     success(res, {
       roomId: room.id,
@@ -69,10 +69,10 @@ export const RoomsController = {
     const { roomId } = req.params;
     const userId = req.userId!;
 
-    const room = getRoomById(roomId);
+    const room = await getRoomById(roomId);
     if (!room) { fail(res, 404, '房间不存在'); return; }
 
-    joinRoom(userId, roomId, false);
+    await joinRoom(userId, roomId, false);
 
     success(res, { roomId });
   },
@@ -83,17 +83,16 @@ export const RoomsController = {
    */
   async getInfo(req: Request, res: Response): Promise<void> {
     const { roomId } = req.params;
-    const room = getRoomById(roomId);
+    const room = await getRoomById(roomId);
     if (!room) { fail(res, 404, '房间不存在'); return; }
 
-    const members = getMembersByRoom(roomId);
+    const members = await getMembersByRoom(roomId);
     success(res, {
       roomId: room.id,
       roomName: room.name,
       activeObjectKey: room.video_url,
       controlMode: room.control_mode,
       controllerId: room.controller_id,
-      // 在线状态不由 HTTP 返回，由 WS ROOM_STATE 负责。前端初始化时视所有成员为不在线。
       members: members.map((m) => ({
         userId: m.user_id,
         nickname: m.nickname,
@@ -109,7 +108,7 @@ export const RoomsController = {
    */
   async getMyRooms(req: Request, res: Response): Promise<void> {
     const userId = req.userId!;
-    const rooms = getRoomsByUser(userId);
+    const rooms = await getRoomsByUser(userId);
     success(res, { rooms });
   },
 
@@ -119,22 +118,21 @@ export const RoomsController = {
    */
   async listVideos(req: Request, res: Response): Promise<void> {
     const { roomId } = req.params;
-    const room = getRoomById(roomId);
+    const room = await getRoomById(roomId);
     if (!room) { fail(res, 404, '房间不存在'); return; }
 
-    const videos = getVideosByRoom(roomId);
-    success(res, {
-      videos: videos.map((v) => ({
-        id: v.id,
-        objectKey: v.video_url,
-        fileName: v.file_name,
-        displayName: v.display_name ?? null,
-        uploaderId: v.uploader_id,
-        createdAt: v.created_at,
-        hlsStatus: v.hls_status,
-        labels: getLabelsByVideo(v.id),
-      })),
-    });
+    const videos = await getVideosByRoom(roomId);
+    const videosWithLabels = await Promise.all(videos.map(async (v) => ({
+      id: v.id,
+      objectKey: v.video_url,
+      fileName: v.file_name,
+      displayName: v.display_name ?? null,
+      uploaderId: v.uploader_id,
+      createdAt: v.created_at,
+      hlsStatus: v.hls_status,
+      labels: await getLabelsByVideo(v.id),
+    })));
+    success(res, { videos: videosWithLabels });
   },
 
   /**
@@ -147,10 +145,10 @@ export const RoomsController = {
 
     if (!videoId) { fail(res, 400, '缺少 videoId 参数'); return; }
 
-    const room = getRoomById(roomId);
+    const room = await getRoomById(roomId);
     if (!room) { fail(res, 404, '房间不存在'); return; }
 
-    const tags = getTagsByRoomVideo(roomId, videoId);
+    const tags = await getTagsByRoomVideo(roomId, videoId);
     success(res, {
       tags: tags.map((t) => ({
         id: t.id,
@@ -167,7 +165,6 @@ export const RoomsController = {
   /**
    * PATCH /api/rooms/:roomId/videos/:videoId/name
    * 更新视频的自定义展示名称。
-   * 权限：房间成员 + （上传者 或 管理员）
    */
   async renameVideo(req: Request, res: Response): Promise<void> {
     const { roomId, videoId } = req.params;
@@ -183,13 +180,12 @@ export const RoomsController = {
       return;
     }
 
-    const video = getRoomVideoById(videoId);
+    const video = await getRoomVideoById(videoId);
     if (!video || video.room_id !== roomId) {
       fail(res, 404, '视频不存在');
       return;
     }
 
-    // 权限校验：上传者 或 管理员（isAdmin 由 roomAuthMiddleware 挂载）
     const isUploader = video.uploader_id === userId;
     if (!isUploader && !req.isAdmin) {
       fail(res, 403, '仅上传者或管理员可修改视频名称');
@@ -197,9 +193,8 @@ export const RoomsController = {
     }
 
     const trimmed = displayName.trim();
-    updateDisplayName(videoId, trimmed);
+    await updateDisplayName(videoId, trimmed);
 
-    // 广播给房间全员
     broadcast(roomId, {
       type: 'VIDEO_RENAMED',
       data: { videoId, displayName: trimmed },
@@ -210,33 +205,29 @@ export const RoomsController = {
 
   /**
    * DELETE /api/rooms/:roomId/videos/:videoId
-   * 删除视频及其所有 tags。
-   * 权限：房间成员 + （上传者 或 管理员）
+   * 删除视频及其所有 tags 和 labels（流量记录不删除，保留供统计）
    */
   async deleteVideo(req: Request, res: Response): Promise<void> {
     const { roomId, videoId } = req.params;
     const userId = req.userId!;
 
-    const video = getRoomVideoById(videoId);
+    const video = await getRoomVideoById(videoId);
     if (!video || video.room_id !== roomId) {
       fail(res, 404, '视频不存在');
       return;
     }
 
-    // 权限校验：上传者 或 管理员（isAdmin 由 roomAuthMiddleware 挂载）
     const isUploader = video.uploader_id === userId;
     if (!isUploader && !req.isAdmin) {
       fail(res, 403, '仅上传者或管理员可删除视频');
       return;
     }
 
-    // 级联删除该视频的所有 tags 和 labels
-    deleteTagsByVideo(videoId);
-    deleteLabelsByVideo(videoId);
-    // 删除视频记录
-    deleteRoomVideo(videoId);
+    // 级联删除该视频的所有 tags 和 labels（流量记录保留）
+    await deleteTagsByVideo(videoId);
+    await deleteLabelsByVideo(videoId);
+    await deleteRoomVideo(videoId);
 
-    // 广播给房间全员
     broadcast(roomId, {
       type: 'VIDEO_DELETED',
       data: { videoId },
@@ -248,7 +239,6 @@ export const RoomsController = {
   /**
    * PUT /api/rooms/:roomId/videos/:videoId/labels
    * 整体替换视频的 label 列表。
-   * 权限：房间成员 + （上传者 或 管理员）
    */
   async updateVideoLabels(req: Request, res: Response): Promise<void> {
     const { roomId, videoId } = req.params;
@@ -270,13 +260,12 @@ export const RoomsController = {
       }
     }
 
-    const video = getRoomVideoById(videoId);
+    const video = await getRoomVideoById(videoId);
     if (!video || video.room_id !== roomId) {
       fail(res, 404, '视频不存在');
       return;
     }
 
-    // 权限校验：上传者 或 管理员
     const isUploader = video.uploader_id === userId;
     if (!isUploader && !req.isAdmin) {
       fail(res, 403, '仅上传者或管理员可修改 label');
@@ -284,9 +273,8 @@ export const RoomsController = {
     }
 
     const trimmed = (labels as string[]).map((l) => l.trim());
-    setLabelsForVideo(videoId, trimmed);
+    await setLabelsForVideo(videoId, trimmed);
 
-    // 广播给房间全员
     broadcast(roomId, {
       type: 'VIDEO_LABELS_UPDATED',
       data: { videoId, labels: trimmed },
@@ -297,14 +285,6 @@ export const RoomsController = {
 
   /**
    * GET /api/rooms/:roomId/upload-url
-   *
-   * 废弃白名单直传分支，线上模式统一返回 mode: 'proxy'。
-   *
-   * - 本地模式（isOnlineMode() === false）：
-   *     mode: 'local'，前端直传到后端本地
-   *
-   * - 线上模式：
-   *     mode: 'proxy'，文件经后端中转写入 COS，后端负责切片
    */
   async getUploadUrl(req: Request, res: Response): Promise<void> {
     const { roomId } = req.params;
@@ -312,7 +292,7 @@ export const RoomsController = {
 
     if (!fileName || !fileType) { fail(res, 400, '缺少 fileName 或 fileType 参数'); return; }
 
-    const room = getRoomById(roomId);
+    const room = await getRoomById(roomId);
     if (!room) { fail(res, 404, '房间不存在'); return; }
 
     if (isOnlineMode()) {
@@ -337,17 +317,6 @@ export const RoomsController = {
   /**
    * POST /api/rooms/:roomId/upload-proxy
    * 后端接收文件流，先落盘临时目录，立即响应前端，然后异步切片并上传到 COS。
-   *
-   * 流程：
-   *   1. uploadGuard 中间件已完成 Sec-Fetch 校验 + 每日流量预检
-   *   2. 将 req 流 pipe 到 /tmp/cowatch-{uuid}.mp4（临时文件）
-   *   3. 写完后立即写入 DB 并响应前端 200（进度条立刻跳 100%，进入"切片中"状态）
-   *   4. 后台异步：ffmpeg 读本地临时文件切片 → 上传 .ts 到 COS → 删临时文件
-   *   5. 切片完成后广播 VIDEO_ADDED
-   *
-   * 与旧方案的区别：
-   *   旧：req → COS（阻塞等待 COS 写完）→ 响应前端 → ffmpeg 从 CDN URL 下载（容器内 DNS 失败）
-   *   新：req → 临时文件（本地 I/O）→ 立即响应前端 → ffmpeg 读临时文件（无网络依赖）→ 上传 .ts
    */
   proxyUpload(req: Request, res: Response): void {
     const { roomId } = req.params;
@@ -359,155 +328,146 @@ export const RoomsController = {
       return;
     }
 
-    const room = getRoomById(roomId);
-    if (!room) { fail(res, 404, '房间不存在'); return; }
+    void (async () => {
+      const room = await getRoomById(roomId);
+      if (!room) { fail(res, 404, '房间不存在'); return; }
 
-    // 临时文件路径：/tmp/cowatch-{uuid}.mp4
-    const tmpFile = path.join(os.tmpdir(), `cowatch-${uuidv4()}.mp4`);
-    const writeStream = fs.createWriteStream(tmpFile);
-    req.pipe(writeStream);
+      const tmpFile = path.join(os.tmpdir(), `cowatch-${uuidv4()}.mp4`);
+      const writeStream = fs.createWriteStream(tmpFile);
+      req.pipe(writeStream);
 
-    writeStream.on('finish', () => {
-      const realBytes = parseInt(req.headers['content-length'] ?? '0', 10);
-      if (realBytes > 0) addDailyBytes(roomId, realBytes);
+      writeStream.on('finish', () => {
+        const realBytes = parseInt(req.headers['content-length'] ?? '0', 10);
+        if (realBytes > 0) addDailyBytes(roomId, realBytes);
 
-      // 写入 room_videos（hls_status 默认为 'pending'）
-      const videoId = uuidv4();
-      const video = addRoomVideo(videoId, roomId, objectKey, fileName, userId);
+        void (async () => {
+          const videoId = uuidv4();
+          const video = await addRoomVideo(videoId, roomId, objectKey, fileName, userId);
 
-      // 立即响应前端，切片在后台异步进行
-      success(res, { objectKey, videoId: video.id });
+          success(res, { objectKey, videoId: video.id });
 
-      const hlsPrefix = `cowatch/${roomId}/${videoId}/`;
-      console.log(`[proxyUpload] 开始异步切片：videoId=${videoId} tmpFile=${tmpFile}`);
+          const hlsPrefix = `cowatch/${roomId}/${videoId}/`;
+          console.log(`[proxyUpload] 开始异步切片：videoId=${videoId} tmpFile=${tmpFile}`);
 
-      // 异步切片：ffmpeg 读本地临时文件，无需从 COS/CDN 下载
-      void transcodeToHls(
-        videoId,
-        tmpFile,
-        hlsPrefix,
-        () => {
-          broadcast(roomId, {
-            type: 'VIDEO_ADDED',
-            data: {
-              id: video.id,
-              objectKey,
-              m3u8ObjectKey: hlsPrefix,
-              videoUrl: `/api/rooms/${roomId}/videos/${videoId}/m3u8`,
-              fileName: video.file_name,
-              uploaderId: video.uploader_id,
-              createdAt: video.created_at,
+          void transcodeToHls(
+            videoId,
+            tmpFile,
+            hlsPrefix,
+            () => {
+              broadcast(roomId, {
+                type: 'VIDEO_ADDED',
+                data: {
+                  id: video.id,
+                  objectKey,
+                  m3u8ObjectKey: hlsPrefix,
+                  videoUrl: `/api/rooms/${roomId}/videos/${videoId}/m3u8`,
+                  fileName: video.file_name,
+                  uploaderId: video.uploader_id,
+                  createdAt: video.created_at,
+                },
+              });
+              console.log(`[proxyUpload] 切片完成，已广播 VIDEO_ADDED：videoId=${videoId}`);
             },
-          });
-          console.log(`[proxyUpload] 切片完成，已广播 VIDEO_ADDED：videoId=${videoId}`);
-        },
-        (err) => {
-          console.error(`[proxyUpload] 切片失败：videoId=${videoId}`, err.message);
-          broadcast(roomId, {
-            type: 'VIDEO_SLICE_ERROR',
-            data: {
-              videoId: video.id,
-              fileName: video.file_name,
-              message: '视频切片处理失败，请重新上传',
+            (err) => {
+              console.error(`[proxyUpload] 切片失败：videoId=${videoId}`, err.message);
+              broadcast(roomId, {
+                type: 'VIDEO_SLICE_ERROR',
+                data: {
+                  videoId: video.id,
+                  fileName: video.file_name,
+                  message: '视频切片处理失败，请重新上传',
+                },
+              });
             },
-          });
-        },
-        undefined, // uploadsDir：线上模式不需要
-        true,      // isTmpFile：切片完成后删除此临时文件
-      );
-    });
+            undefined,
+            true,
+          );
+        })();
+      });
 
-    writeStream.on('error', (err) => {
-      console.error('[proxyUpload] 写临时文件失败', err);
-      fail(res, 500, '文件接收失败');
-    });
+      writeStream.on('error', (err) => {
+        console.error('[proxyUpload] 写临时文件失败', err);
+        fail(res, 500, '文件接收失败');
+      });
+    })();
   },
 
   /**
    * PUT /api/rooms/:roomId/upload
-   * 本地模式专用：接收前端直传的视频文件，写入 uploads/{objectKey}，
-   * 完成后异步触发 HLS 切片。
+   * 本地模式专用：接收前端直传的视频文件，写入 uploads/{objectKey}。
    */
   uploadLocal(req: Request, res: Response): void {
     const { roomId } = req.params;
     const userId = req.userId!;
 
-    const room = getRoomById(roomId);
-    if (!room) { fail(res, 404, '房间不存在'); return; }
+    void (async () => {
+      const room = await getRoomById(roomId);
+      if (!room) { fail(res, 404, '房间不存在'); return; }
 
-    const objectKey = (req.query.objectKey as string) || `cowatch/${roomId}/${uuidv4()}.mp4`;
-    const rawName = (req.query.fileName as string) || 'video.mp4';
+      const objectKey = (req.query.objectKey as string) || `cowatch/${roomId}/${uuidv4()}.mp4`;
+      const rawName = (req.query.fileName as string) || 'video.mp4';
 
-    const filePath = path.join(uploadsDir, objectKey);
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      const filePath = path.join(uploadsDir, objectKey);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
 
-    const writeStream = fs.createWriteStream(filePath);
-    req.pipe(writeStream);
+      const writeStream = fs.createWriteStream(filePath);
+      req.pipe(writeStream);
 
-    writeStream.on('finish', () => {
-      const videoId = uuidv4();
-      const video = addRoomVideo(videoId, roomId, objectKey, rawName, userId);
+      writeStream.on('finish', () => {
+        void (async () => {
+          const videoId = uuidv4();
+          const video = await addRoomVideo(videoId, roomId, objectKey, rawName, userId);
 
-      // 立即响应前端
-      success(res, { objectKey, videoId: video.id });
+          success(res, { objectKey, videoId: video.id });
 
-      const hlsPrefix = `cowatch/${roomId}/${videoId}/`;
+          const hlsPrefix = `cowatch/${roomId}/${videoId}/`;
+          console.log(`[uploadLocal] 开始异步切片：videoId=${videoId} objectKey=${objectKey}`);
 
-      console.log(`[uploadLocal] 开始异步切片：videoId=${videoId} objectKey=${objectKey}`);
-
-      void transcodeToHls(
-        videoId,
-        objectKey,
-        hlsPrefix,
-        () => {
-          broadcast(roomId, {
-            type: 'VIDEO_ADDED',
-            data: {
-              id: video.id,
-              objectKey,
-              m3u8ObjectKey: hlsPrefix,
-              videoUrl: `/api/rooms/${roomId}/videos/${videoId}/m3u8`,
-              fileName: video.file_name,
-              uploaderId: video.uploader_id,
-              createdAt: video.created_at,
+          void transcodeToHls(
+            videoId,
+            objectKey,
+            hlsPrefix,
+            () => {
+              broadcast(roomId, {
+                type: 'VIDEO_ADDED',
+                data: {
+                  id: video.id,
+                  objectKey,
+                  m3u8ObjectKey: hlsPrefix,
+                  videoUrl: `/api/rooms/${roomId}/videos/${videoId}/m3u8`,
+                  fileName: video.file_name,
+                  uploaderId: video.uploader_id,
+                  createdAt: video.created_at,
+                },
+              });
+              console.log(`[uploadLocal] 切片完成，已广播 VIDEO_ADDED：videoId=${videoId}`);
             },
-          });
-          console.log(`[uploadLocal] 切片完成，已广播 VIDEO_ADDED：videoId=${videoId}`);
-        },
-        (err) => {
-          console.error(`[uploadLocal] 切片失败：videoId=${videoId}`, err.message);
-          broadcast(roomId, {
-            type: 'VIDEO_SLICE_ERROR',
-            data: {
-              videoId: video.id,
-              fileName: video.file_name,
-              message: '视频切片处理失败，请重新上传',
+            (err) => {
+              console.error(`[uploadLocal] 切片失败：videoId=${videoId}`, err.message);
+              broadcast(roomId, {
+                type: 'VIDEO_SLICE_ERROR',
+                data: {
+                  videoId: video.id,
+                  fileName: video.file_name,
+                  message: '视频切片处理失败，请重新上传',
+                },
+              });
             },
-          });
-        },
-        uploadsDir,
-      );
-    });
+            uploadsDir,
+          );
+        })();
+      });
 
-    writeStream.on('error', (err) => {
-      console.error('[uploadLocal]', err);
-      fail(res, 500, '文件保存失败');
-    });
+      writeStream.on('error', (err) => {
+        console.error('[uploadLocal]', err);
+        fail(res, 500, '文件保存失败');
+      });
+    })();
   },
 
   /**
    * POST /api/rooms/segment-view
    * 批量上报 HLS 片段的真实 CDN 下载记录（缓存未命中触发）。
-   *
-   * 由 Service Worker 在缓存未命中后批量调用（满 10 条或 3 秒 flush 一次），
-   * 单事务写入，减少 SQLite 写锁竞争次数。
-   *
-   * 此接口无需用户鉴权：
-   *   - SW 运行在独立线程，拿不到 HttpOnly cookie
-   *   - 上报数据仅用于成本统计，不涉及写权限
-   *
-   * Body：{ items: Array<{ roomId, videoId, segmentName, userId, bytes }> }
-   * 单次最多 50 条，超出截断，避免超大 payload。
    */
   async reportSegmentView(req: Request, res: Response): Promise<void> {
     const { items } = req.body as { items?: unknown[] };
@@ -517,7 +477,6 @@ export const RoomsController = {
       return;
     }
 
-    // 校验并提取合法记录，单次上限 50 条
     const validItems: SegmentViewInput[] = [];
     for (const item of items.slice(0, 50)) {
       const { roomId, videoId, segmentName, userId = 'anonymous', bytes = 0 } =
@@ -538,10 +497,9 @@ export const RoomsController = {
     }
 
     try {
-      insertSegmentViewBatch(validItems);
+      await insertSegmentViewBatch(validItems);
       success(res, null);
     } catch (err) {
-      // 上报失败不影响业务，静默返回 200，避免 SW 重试风暴
       console.error('[reportSegmentView] 批量写入失败', err);
       success(res, null);
     }
@@ -550,13 +508,9 @@ export const RoomsController = {
   /**
    * GET /api/rooms/:roomId/videos/:videoId/m3u8
    * 动态生成带签名 URL 的 m3u8 内容并返回。
-   *
-   * 每次请求实时生成，片段签名有效期 2 小时。
-   * 跨天复盘场景：前端重新请求此接口即可刷新签名，SW 缓存的 .ts 片段不受影响。
    */
   async getVideoM3u8(req: Request, res: Response): Promise<void> {
     const { videoId } = req.params;
-    // 将当前登录用户 ID 写入 CDN TypeA 签名的 uid 字段，用于流量归因统计
     const userId = req.userId ?? '0';
 
     try {
