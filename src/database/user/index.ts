@@ -6,8 +6,6 @@ export interface UserRow {
   password_hash: string;
   nickname: string;
   created_at: number;
-  /** @deprecated 已废弃，改用 user_subscriptions 判断权益 */
-  is_upload_whitelist: number;
   /** 用户头像 URL；NULL 表示使用默认头像 */
   avatar_url: string | null;
   is_banned: number;

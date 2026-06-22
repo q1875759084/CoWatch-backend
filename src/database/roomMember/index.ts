@@ -3,7 +3,7 @@ import sql from '../index.js';
 export interface RoomMemberRow {
   user_id: string;
   room_id: string;
-  is_admin: number;
+  is_admin: 0 | 1;
   joined_at: number;
 }
 
@@ -18,7 +18,7 @@ export interface RoomWithMembership {
   video_url: string | null;
   created_at: number;
   updated_at: number;
-  is_admin: number;
+  is_admin: 0 | 1;
   joined_at: number;
 }
 

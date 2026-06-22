@@ -68,8 +68,6 @@ export async function runMigrations(sql: Sql): Promise<void> {
 
 /**
  * 预置初始 Admin 账号（幂等，已存在则跳过）
- *
- * 账号/密码与旧 SQLite 版本保持一致，保证已有 admin 操作流程不变。
  */
 async function seedAdminUser(sql: Sql): Promise<void> {
   const ADMIN_USERNAME = 'cmjndy312405';

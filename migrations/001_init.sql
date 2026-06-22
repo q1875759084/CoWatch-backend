@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash        TEXT NOT NULL,
   nickname             TEXT NOT NULL,
   created_at           BIGINT NOT NULL,
-  is_upload_whitelist  INTEGER NOT NULL DEFAULT 0,  -- 已废弃，保留兼容
+  is_upload_whitelist  INTEGER NOT NULL DEFAULT 0,  -- 已废弃，由 003 migration 删除
   avatar_url           TEXT,
   is_banned            INTEGER NOT NULL DEFAULT 0
 );

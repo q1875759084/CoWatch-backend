@@ -113,7 +113,7 @@ export const RoomsController = {
       room_id: r.id,
       room_name: r.name,
       video_url: r.video_url,
-      is_admin: r.is_admin,
+      is_admin: r.is_admin === 1,
       joined_at: r.joined_at,
       created_at: r.created_at,
       updated_at: r.updated_at,
