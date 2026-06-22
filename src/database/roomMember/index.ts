@@ -19,6 +19,7 @@ export interface RoomWithMembership {
   created_at: number;
   updated_at: number;
   is_admin: number;
+  joined_at: number;
 }
 
 /**
@@ -71,7 +72,7 @@ export async function getAdminByRoom(roomId: string): Promise<RoomMemberRow | nu
  */
 export async function getRoomsByUser(userId: string): Promise<RoomWithMembership[]> {
   const rows = await sql`
-    SELECT r.id, r.name, r.video_url, r.created_at, r.updated_at, rm.is_admin
+    SELECT r.id, r.name, r.video_url, r.created_at, r.updated_at, rm.is_admin, rm.joined_at
     FROM rooms r
     JOIN room_members rm ON rm.room_id = r.id
     WHERE rm.user_id = ${userId}

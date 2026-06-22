@@ -108,7 +108,16 @@ export const RoomsController = {
    */
   async getMyRooms(req: Request, res: Response): Promise<void> {
     const userId = req.userId!;
-    const rooms = await getRoomsByUser(userId);
+    const rows = await getRoomsByUser(userId);
+    const rooms = rows.map((r) => ({
+      room_id: r.id,
+      room_name: r.name,
+      video_url: r.video_url,
+      is_admin: r.is_admin,
+      joined_at: r.joined_at,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+    }));
     success(res, { rooms });
   },
 
