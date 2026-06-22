@@ -11,6 +11,22 @@ export interface SegmentViewRow {
   created_at: number;
 }
 
+// ─── 删除 ──────────────────────────────────────────────────────────────────────
+
+/**
+ * 删除指定视频的所有流量记录。
+ *
+ * ⚠️ 不应在视频删除流程中调用此函数。
+ * segment_views 是纯流量日志表，video_id 只是分组 key，视频删除后
+ * 历史流量记录应继续保留，以支持 dashboard 的流量统计回溯。
+ * （segment_views 表已不含外键约束，视频删除不会触发级联问题）
+ *
+ * 仅用于数据清理、GDPR 删除等特殊场景。
+ */
+export function deleteSegmentViewsByVideo(videoId: string): void {
+  db.prepare('DELETE FROM segment_views WHERE video_id = ?').run(videoId);
+}
+
 // ─── 写入 ──────────────────────────────────────────────────────────────────────
 
 /**

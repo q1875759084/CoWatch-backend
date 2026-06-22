@@ -108,9 +108,7 @@ export function initSchema(): void {
       segment_name  TEXT NOT NULL,
       user_id       TEXT NOT NULL,
       bytes         INTEGER NOT NULL DEFAULT 0,
-      created_at    INTEGER NOT NULL,
-      FOREIGN KEY (room_id)  REFERENCES rooms(id),
-      FOREIGN KEY (video_id) REFERENCES room_videos(id)
+      created_at    INTEGER NOT NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_segment_views_room    ON segment_views (room_id, created_at);
@@ -186,6 +184,79 @@ function runMigrations(): void {
         // 其他错误（如语法错误）需要抛出，避免静默掩盖真实问题
         throw err;
       }
+    }
+  }
+
+  // segment_views 外键迁移：单独处理，需要重建表
+  // SQLite 不支持 DROP CONSTRAINT，只能通过重建表去除外键。
+  // 用 PRAGMA foreign_key_list 判断是否已迁移（无外键则跳过）。
+  removeSegmentViewsForeignKeys();
+}
+
+/**
+ * 去除 segment_views 表的外键约束（幂等）
+ *
+ * 背景：segment_views 是纯流量日志表，video_id 只是分组 key，
+ * 不应因视频删除而级联删除（否则历史流量统计无法回溯）。
+ *
+ * SQLite 不支持 ALTER TABLE DROP CONSTRAINT，只能重建表。
+ */
+function removeSegmentViewsForeignKeys(): void {
+  try {
+    // 检查 segment_views 表是否仍有外键（旧表）
+    const fkList = db.prepare("PRAGMA foreign_key_list('segment_views')").all() as unknown[];
+    if (fkList.length === 0) {
+      // 已无外键，跳过
+      return;
+    }
+
+    console.log('🔄 检测到 segment_views 表含外键，开始迁移...');
+
+    // 关闭外键约束检查（迁移期间）
+    db.prepare('PRAGMA foreign_keys = OFF').run();
+
+    // 1. 创建无外键的新表
+    db.prepare(`
+      CREATE TABLE segment_views_new (
+        id            TEXT PRIMARY KEY,
+        room_id       TEXT NOT NULL,
+        video_id      TEXT NOT NULL,
+        segment_name  TEXT NOT NULL,
+        user_id       TEXT NOT NULL,
+        bytes         INTEGER NOT NULL DEFAULT 0,
+        created_at    INTEGER NOT NULL
+      )
+    `).run();
+
+    // 2. 复制数据
+    db.prepare(`
+      INSERT INTO segment_views_new (id, room_id, video_id, segment_name, user_id, bytes, created_at)
+      SELECT id, room_id, video_id, segment_name, user_id, bytes, created_at FROM segment_views
+    `).run();
+
+    // 3. 删除旧表
+    db.prepare('DROP TABLE segment_views').run();
+
+    // 4. 重命名新表
+    db.prepare('ALTER TABLE segment_views_new RENAME TO segment_views').run();
+
+    // 5. 重建索引（索引不会自动复制）
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_segment_views_room  ON segment_views (room_id, created_at)').run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_segment_views_video ON segment_views (video_id, created_at)').run();
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_segment_views_user  ON segment_views (user_id, created_at)').run();
+
+    // 恢复外键约束检查
+    db.prepare('PRAGMA foreign_keys = ON').run();
+
+    console.log('✅ segment_views 外键已移除，流量数据完整保留');
+  } catch (err) {
+    console.error('❌ segment_views 外键迁移失败:', err);
+    // 迁移失败不阻塞启动，但需要手动介入
+    // 恢复外键约束开关
+    try {
+      db.prepare('PRAGMA foreign_keys = ON').run();
+    } catch {
+      // ignore
     }
   }
 }

@@ -6,3 +6,13 @@ database/*.sqlite3-wal
 uploads/
 .env
 *.log
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# 本地视频压缩产物
+compress-output/
+
+# SQLite 数据库文件（根目录）
+*.db
