@@ -9,8 +9,7 @@
     "build": "rimraf dist && tsc && cp -r src/assets dist/assets",
     "start": "node dist/app.js",
     "type-check": "tsc --noEmit",
-    "db:reset": "echo '⚠️  PG 模式下请通过 Docker 重建：docker compose -f docker-compose.local.yml down -v && docker compose -f docker-compose.local.yml up -d'",
-    "migrate:from-sqlite": "npx tsx scripts/migrate-from-sqlite.ts"
+    "db:reset": "echo '⚠️  PG 模式下请通过 Docker 重建：docker compose -f docker-compose.local.yml down -v && docker compose -f docker-compose.local.yml up -d'"
   },
   "engines": {
     "node": ">=20",
