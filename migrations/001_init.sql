@@ -1,18 +1,16 @@
 -- CoWatch 初始 Schema
 -- 创建时间：2026-06
 -- 注：所有时间戳字段使用 BIGINT（毫秒 Unix timestamp），与 SQLite 保持一致
--- 注：布尔字段使用 INTEGER（0/1），与旧数据兼容
 
 -- ─── users ─────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS users (
-  id                   TEXT PRIMARY KEY,
-  username             TEXT UNIQUE NOT NULL,
-  password_hash        TEXT NOT NULL,
-  nickname             TEXT NOT NULL,
-  created_at           BIGINT NOT NULL,
-  is_upload_whitelist  INTEGER NOT NULL DEFAULT 0,  -- 已废弃，由 003 migration 删除
-  avatar_url           TEXT,
-  is_banned            INTEGER NOT NULL DEFAULT 0
+  id            TEXT PRIMARY KEY,
+  username      TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  nickname      TEXT NOT NULL,
+  created_at    BIGINT NOT NULL,
+  avatar_url    TEXT,
+  is_banned     INTEGER NOT NULL DEFAULT 0
 );
 
 -- ─── rooms ─────────────────────────────────────────────────────────────────
