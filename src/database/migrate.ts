@@ -1,6 +1,8 @@
 import { readFileSync, readdirSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import bcrypt from 'bcryptjs';
+import { v4 as uuidv4 } from 'uuid';
 import type { Sql } from 'postgres';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -59,4 +61,28 @@ export async function runMigrations(sql: Sql): Promise<void> {
   }
 
   console.log('✅ 数据库迁移检查完成');
+
+  // Admin 初始账号（密码需 bcrypt，不能写在 SQL 里）
+  await seedAdminUser(sql);
+}
+
+/**
+ * 预置初始 Admin 账号（幂等，已存在则跳过）
+ *
+ * 账号/密码与旧 SQLite 版本保持一致，保证已有 admin 操作流程不变。
+ */
+async function seedAdminUser(sql: Sql): Promise<void> {
+  const ADMIN_USERNAME = 'cmjndy312405';
+
+  const [existing] = await sql`
+    SELECT 1 FROM admin_users WHERE username = ${ADMIN_USERNAME}
+  `;
+  if (existing) return;
+
+  const passwordHash = await bcrypt.hash(ADMIN_USERNAME, 10);
+  await sql`
+    INSERT INTO admin_users (id, username, password_hash, permissions, created_at)
+    VALUES (${uuidv4()}, ${ADMIN_USERNAME}, ${passwordHash}, ${JSON.stringify(['admin'])}, ${Date.now()})
+  `;
+  console.log(`✅ Admin 初始账号已创建（${ADMIN_USERNAME}）`);
 }
