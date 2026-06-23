@@ -358,6 +358,15 @@ export const RoomsController = {
       const writeStream = fs.createWriteStream(tmpFile);
       req.pipe(writeStream);
 
+      // 客户端中途断开（刷新/关闭浏览器）：req 触发 'close' 且响应尚未发出
+      // req.pipe 不会自动关闭 writeStream，需手动销毁并清理残缺临时文件
+      req.on('close', () => {
+        if (res.headersSent) return; // 已正常响应，忽略
+        console.warn('[proxyUpload] 客户端中断上传，清理临时文件：', tmpFile);
+        writeStream.destroy();
+        fs.rm(tmpFile, { force: true }, () => {});
+      });
+
       writeStream.on('finish', () => {
         const realBytes = parseInt(req.headers['content-length'] ?? '0', 10);
         if (realBytes > 0) addDailyBytes(roomId, realBytes);
@@ -437,6 +446,14 @@ export const RoomsController = {
 
       const writeStream = fs.createWriteStream(filePath);
       req.pipe(writeStream);
+
+      // 客户端中途断开：清理残缺文件，避免 uploads/ 目录积累不完整视频
+      req.on('close', () => {
+        if (res.headersSent) return;
+        console.warn('[uploadLocal] 客户端中断上传，清理残缺文件：', filePath);
+        writeStream.destroy();
+        fs.rm(filePath, { force: true }, () => {});
+      });
 
       writeStream.on('finish', () => {
         void (async () => {
