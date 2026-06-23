@@ -356,25 +356,9 @@ export const RoomsController = {
 
       const tmpFile = path.join(os.tmpdir(), `cowatch-${uuidv4()}.mp4`);
       const writeStream = fs.createWriteStream(tmpFile);
-
-      // 正常写完标志：在 finish 回调里置 true，供 req close 判断用
-      // 不能用 writeStream.writableFinished，因为 req 'close' 和 writeStream 'finish'
-      // 几乎同时触发，存在 writableFinished 还未更新的 race condition
-      let writeFinished = false;
-
       req.pipe(writeStream);
 
-      // 客户端中途断开（刷新/关闭浏览器）：req 触发 'close' 且写未完成
-      // 正常上传完成后连接也会关闭触发 'close'，用 writeFinished 标志位区分
-      req.on('close', () => {
-        if (writeFinished) return; // 已正常写完，忽略
-        console.warn('[proxyUpload] 客户端中断上传，清理临时文件：', tmpFile);
-        writeStream.destroy();
-        fs.rm(tmpFile, { force: true }, () => {});
-      });
-
       writeStream.on('finish', () => {
-        writeFinished = true;
         const realBytes = parseInt(req.headers['content-length'] ?? '0', 10);
         if (realBytes > 0) addDailyBytes(roomId, realBytes);
 
@@ -427,11 +411,8 @@ export const RoomsController = {
       });
 
       writeStream.on('error', (err) => {
-        // writeStream.destroyed 为 true 说明是 req close 时主动调用 destroy() 触发的，
-        // 属于正常中断清理流程，不是真实 I/O 错误，忽略即可
-        if (writeStream.destroyed) return;
         console.error('[proxyUpload] 写临时文件失败', err);
-        if (!res.headersSent) fail(res, 500, '文件接收失败');
+        fail(res, 500, '文件接收失败');
       });
     })();
   },
@@ -455,21 +436,9 @@ export const RoomsController = {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
 
       const writeStream = fs.createWriteStream(filePath);
-      let writeFinished = false;
       req.pipe(writeStream);
 
-      // 客户端中途断开：清理残缺文件，避免 uploads/ 目录积累不完整视频
-      // 同 proxyUpload：用 writeFinished 标志位而非 writeStream.writableFinished，
-      // 避免 req 'close' 与 writeStream 'finish' 几乎同时触发时的 race condition
-      req.on('close', () => {
-        if (writeFinished) return;
-        console.warn('[uploadLocal] 客户端中断上传，清理残缺文件：', filePath);
-        writeStream.destroy();
-        fs.rm(filePath, { force: true }, () => {});
-      });
-
       writeStream.on('finish', () => {
-        writeFinished = true;
         void (async () => {
           const videoId = uuidv4();
           const video = await addRoomVideo(videoId, roomId, objectKey, rawName, userId);
@@ -519,10 +488,8 @@ export const RoomsController = {
       });
 
       writeStream.on('error', (err) => {
-        // writeStream.destroyed 为 true 说明是 req close 时主动调用 destroy() 触发的，忽略
-        if (writeStream.destroyed) return;
         console.error('[uploadLocal]', err);
-        if (!res.headersSent) fail(res, 500, '文件保存失败');
+        fail(res, 500, '文件保存失败');
       });
     })();
   },
