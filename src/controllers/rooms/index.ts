@@ -369,7 +369,9 @@ export const RoomsController = {
           success(res, { objectKey, videoId: video.id });
 
           const hlsPrefix = `cowatch/${roomId}/${videoId}/`;
-          console.log(`[proxyUpload] 开始异步切片：videoId=${videoId} tmpFile=${tmpFile}`);
+          // pro 房间：前端直传原始视频，后端负责转码（libx264 CRF 30 veryfast）
+          const needTranscode = room.plan_level === 'vip:pro';
+          console.log(`[proxyUpload] 开始异步处理：videoId=${videoId} transcode=${needTranscode} tmpFile=${tmpFile}`);
 
           void transcodeToHls(
             videoId,
@@ -388,21 +390,22 @@ export const RoomsController = {
                   createdAt: video.created_at,
                 },
               });
-              console.log(`[proxyUpload] 切片完成，已广播 VIDEO_ADDED：videoId=${videoId}`);
+              console.log(`[proxyUpload] 处理完成，已广播 VIDEO_ADDED：videoId=${videoId}`);
             },
             (err) => {
-              console.error(`[proxyUpload] 切片失败：videoId=${videoId}`, err.message);
+              console.error(`[proxyUpload] 处理失败：videoId=${videoId}`, err.message);
               broadcast(roomId, {
                 type: 'VIDEO_SLICE_ERROR',
                 data: {
                   videoId: video.id,
                   fileName: video.file_name,
-                  message: '视频切片处理失败，请重新上传',
+                  message: '视频处理失败，请重新上传',
                 },
               });
             },
             undefined,
             true,
+            needTranscode,
           );
         })();
       });
@@ -443,7 +446,9 @@ export const RoomsController = {
           success(res, { objectKey, videoId: video.id });
 
           const hlsPrefix = `cowatch/${roomId}/${videoId}/`;
-          console.log(`[uploadLocal] 开始异步切片：videoId=${videoId} objectKey=${objectKey}`);
+          // pro 房间：前端直传原始视频，后端负责转码（libx264 CRF 30 veryfast）
+          const needTranscode = room.plan_level === 'vip:pro';
+          console.log(`[uploadLocal] 开始异步处理：videoId=${videoId} transcode=${needTranscode} objectKey=${objectKey}`);
 
           void transcodeToHls(
             videoId,
@@ -462,20 +467,22 @@ export const RoomsController = {
                   createdAt: video.created_at,
                 },
               });
-              console.log(`[uploadLocal] 切片完成，已广播 VIDEO_ADDED：videoId=${videoId}`);
+              console.log(`[uploadLocal] 处理完成，已广播 VIDEO_ADDED：videoId=${videoId}`);
             },
             (err) => {
-              console.error(`[uploadLocal] 切片失败：videoId=${videoId}`, err.message);
+              console.error(`[uploadLocal] 处理失败：videoId=${videoId}`, err.message);
               broadcast(roomId, {
                 type: 'VIDEO_SLICE_ERROR',
                 data: {
                   videoId: video.id,
                   fileName: video.file_name,
-                  message: '视频切片处理失败，请重新上传',
+                  message: '视频处理失败，请重新上传',
                 },
               });
             },
             uploadsDir,
+            false,
+            needTranscode,
           );
         })();
       });

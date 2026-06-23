@@ -18,38 +18,124 @@ import {
  */
 const HLS_SEGMENT_DURATION = 10;
 
+// ─── 串行转码队列 ──────────────────────────────────────────────────────────────
+//
+// 背景：pro 房间支持前端直传原始视频，后端用 libx264（CRF 30 veryfast）转码。
+//
+// 服务器环境（2026-06-23 确认）：
+//   OS        Ubuntu 24.04 LTS x86_64
+//   ffmpeg    系统自带 v6.1.1（/usr/bin/ffmpeg），libx264 可用
+//   CPU       4 核
+//   内存      3.6 GB 总量，可用约 2.1 GB
+//   磁盘      根分区 59 GB，已用 39 GB，剩余 18 GB（/tmp 挂载在根分区）
+//
+// ── 风险一：CPU ────────────────────────────────────────────────────────────────
+//   libx264 veryfast 单任务约占 1–2 核，速度约 5–8x 实时。
+//   并发转码时 CPU 打满，HTTP/WS 请求响应延迟上升，WS 心跳可能超时断连。
+//   → 串行队列保证同一时刻只有一个转码任务运行，-c copy 任务不受此限制。
+//
+// ── 风险二：内存 ───────────────────────────────────────────────────────────────
+//   ffmpeg 为流式处理，不会将整个文件读入内存；
+//   实际占用取决于 GOP 大小（-g 300 = 5s@60fps），约 几十~几百 MB，与文件大小无关。
+//   → 内存不是主要风险，当前串行队列已足够保护。
+//
+// ── 风险三：磁盘 ───────────────────────────────────────────────────────────────
+//   转码期间 /tmp 同时存在原始文件（最大 3 GB）+ 输出 .ts 片段目录（边写边产生）。
+//   串行队列下，若队列中堆积 N 个任务，则 /tmp 最多同时有 N×3 GB 原始文件：
+//     - 任务完成后 isTmpFile=true 立即清理原始临时文件，.ts 片段上传 COS 后也会清理
+//     - 当前剩余 18 GB，2 个排队任务峰值约占 6~7 GB，仍安全
+//     - 若磁盘使用率继续上升（>90%）或高频并发上传，需关注磁盘空间
+//   → 当前无需额外处理，后续可考虑在入队前检查磁盘剩余空间并拒绝请求。
+//
+// 用一个简单的 Promise 链实现串行队列：同一时刻只有一个转码任务在跑，
+// 其余任务排队等待，不影响文件上传响应（文件落盘即立即响应前端，转码异步进行）。
+
+let transcodeQueue = Promise.resolve();
+
+/**
+ * 将 fn 加入串行转码队列。返回的 Promise 在 fn 执行完成（或失败）后 resolve/reject。
+ */
+function enqueueTranscode<T>(fn: () => Promise<T>): Promise<T> {
+  let resolveNext!: (value: T) => void;
+  let rejectNext!: (reason: unknown) => void;
+  const result = new Promise<T>((res, rej) => {
+    resolveNext = res;
+    rejectNext = rej;
+  });
+
+  transcodeQueue = transcodeQueue.then(() =>
+    fn().then(resolveNext, rejectNext),
+  );
+
+  return result;
+}
+
 // ─── ffmpeg 执行 ──────────────────────────────────────────────────────────────
 
 /**
- * 调用系统 ffmpeg 将视频切片为 HLS .ts 格式。
+ * 调用系统 ffmpeg 将视频切片（或先转码再切片）为 HLS .ts 格式。
  *
- * 使用 -c copy（无重编码），切片速度极快（通常 < 5s/视频小时）。
- * 前端已预先转码为 1080p60 30CRF mp4，此处仅做字节级切割。
+ * transcode = false（默认）：
+ *   使用 -c copy（无重编码），切片速度极快（通常 < 5s/视频小时）。
+ *   前端已预先转码为 1080p60 30CRF mp4，此处仅做字节级切割。
  *
- * @param inputPath   ffmpeg -i 输入：临时文件绝对路径（线上模式）或本地文件路径（本地模式）
+ * transcode = true（pro 房间，原始视频直传）：
+ *   先用 libx264 重新编码再切片，参数对齐 compress_30.bat：
+ *     -c:v libx264 -crf 30 -preset veryfast
+ *     -pix_fmt yuv420p（兼容 10bit 源文件）
+ *     -c:a aac -b:a 128k
+ *     -movflags +faststart
+ *     -g 300 -keyint_min 300 -sc_threshold 0（固定 GOP，保证 HLS 切片对齐关键帧）
+ *
+ * @param inputPath   ffmpeg -i 输入路径
  * @param tmpDir      临时输出目录（已由调用方创建）
- * @returns           生成的 m3u8 本地路径（`{tmpDir}/index.m3u8`）
+ * @param transcode   true = 先转码再切片；false = 仅 -c copy 切片
  */
-function runFfmpeg(inputPath: string, tmpDir: string): Promise<void> {
+function runFfmpeg(inputPath: string, tmpDir: string, transcode: boolean): Promise<void> {
   return new Promise((resolve, reject) => {
     const segmentPattern = path.join(tmpDir, 'seg%03d.ts');
     const m3u8Path = path.join(tmpDir, 'index.m3u8');
 
-    const args = [
-      '-i', inputPath,
-      '-c', 'copy',
-      '-f', 'hls',
-      '-hls_time', String(HLS_SEGMENT_DURATION),
-      '-hls_list_size', '0',
-      '-hls_segment_filename', segmentPattern,
-      m3u8Path,
-    ];
+    let args: string[];
 
-    // 使用系统 ffmpeg（通过 Dockerfile apk add ffmpeg 安装，原生架构速度快）
-    // 本地开发：brew install ffmpeg（macOS）
-    const ffmpegPath = 'ffmpeg';
-    console.log('[hlsService] ffmpeg 开始切片：', inputPath);
-    const proc = spawn(ffmpegPath, args);
+    if (transcode) {
+      // 转码 + 切片：参数与 compress_30.bat 保持一致
+      args = [
+        '-i', inputPath,
+        '-c:v', 'libx264',
+        '-crf', '30',
+        '-preset', 'veryfast',
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-movflags', '+faststart',
+        '-g', '300',
+        '-keyint_min', '300',
+        '-sc_threshold', '0',
+        '-f', 'hls',
+        '-hls_time', String(HLS_SEGMENT_DURATION),
+        '-hls_list_size', '0',
+        '-hls_segment_filename', segmentPattern,
+        '-y',
+        m3u8Path,
+      ];
+      console.log('[hlsService] ffmpeg 开始转码+切片：', inputPath);
+    } else {
+      // 仅切片（-c copy）
+      args = [
+        '-i', inputPath,
+        '-c', 'copy',
+        '-f', 'hls',
+        '-hls_time', String(HLS_SEGMENT_DURATION),
+        '-hls_list_size', '0',
+        '-hls_segment_filename', segmentPattern,
+        m3u8Path,
+      ];
+      console.log('[hlsService] ffmpeg 开始切片：', inputPath);
+    }
+
+    // 系统 ffmpeg（Ubuntu apt / macOS brew install ffmpeg）
+    const proc = spawn('ffmpeg', args);
 
     const stderr: string[] = [];
     proc.stderr.on('data', (chunk: Buffer) => {
@@ -58,7 +144,7 @@ function runFfmpeg(inputPath: string, tmpDir: string): Promise<void> {
 
     proc.on('close', (code) => {
       if (code === 0) {
-        console.log('[hlsService] ffmpeg 切片完成');
+        console.log('[hlsService] ffmpeg 完成');
         resolve();
       } else {
         const log = stderr.join('').slice(-2000); // 截取末尾 2000 字符，避免日志过长
@@ -75,8 +161,8 @@ function runFfmpeg(inputPath: string, tmpDir: string): Promise<void> {
 // ─── 核心切片流程 ──────────────────────────────────────────────────────────────
 
 /**
- * 将 mp4 文件通过 ffmpeg -c copy 切片，
- * 生成 .ts 片段并上传到 COS（线上模式）或写入本地目录（本地模式），
+ * 将视频文件通过 ffmpeg 切片（或先转码再切片）为 HLS .ts 格式，
+ * 生成片段并上传到 COS（线上模式）或写入本地目录（本地模式），
  * 最后更新 room_videos 的 hls_* 字段。
  *
  * 此函数为异步后台任务，调用方 fire-and-forget；
@@ -91,6 +177,8 @@ function runFfmpeg(inputPath: string, tmpDir: string): Promise<void> {
  * @param onError      切片失败回调
  * @param uploadsDir   本地模式：uploads 目录的绝对路径（线上模式传 undefined）
  * @param isTmpFile    true 时，切片完成或失败后删除 inputPath 临时文件（线上模式使用）
+ * @param transcode    true = 先用 libx264（CRF 30 veryfast）转码再切片（pro 房间原始直传）
+ *                     false（默认）= 仅 -c copy 切片（前端已预压缩）
  */
 export async function transcodeToHls(
   videoId: string,
@@ -100,6 +188,7 @@ export async function transcodeToHls(
   onError: (err: Error) => void,
   uploadsDir?: string,
   isTmpFile = false,
+  transcode = false,
 ): Promise<void> {
   const tmpDir = path.join(os.tmpdir(), `cowatch-hls-${videoId}`);
 
@@ -120,9 +209,15 @@ export async function transcodeToHls(
       ffmpegInput = path.join(uploadsDir, inputPath);
     }
 
-    // 3. 执行 ffmpeg 切片
+    // 3. 执行 ffmpeg
+    //    transcode=true（原始视频）→ 排入串行队列，避免并发转码打满 CPU/内存
+    //    transcode=false（已压缩）  → 直接跑，-c copy 极快不占资源
     const t0 = Date.now();
-    await runFfmpeg(ffmpegInput, tmpDir);
+    if (transcode) {
+      await enqueueTranscode(() => runFfmpeg(ffmpegInput, tmpDir, true));
+    } else {
+      await runFfmpeg(ffmpegInput, tmpDir, false);
+    }
     const tFfmpeg = Date.now() - t0;
 
     // 4. 收集切片结果
