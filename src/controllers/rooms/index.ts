@@ -356,19 +356,25 @@ export const RoomsController = {
 
       const tmpFile = path.join(os.tmpdir(), `cowatch-${uuidv4()}.mp4`);
       const writeStream = fs.createWriteStream(tmpFile);
+
+      // 正常写完标志：在 finish 回调里置 true，供 req close 判断用
+      // 不能用 writeStream.writableFinished，因为 req 'close' 和 writeStream 'finish'
+      // 几乎同时触发，存在 writableFinished 还未更新的 race condition
+      let writeFinished = false;
+
       req.pipe(writeStream);
 
-      // 客户端中途断开（刷新/关闭浏览器）：req 触发 'close' 且 writeStream 尚未写完
-      // 注意：正常上传完成后连接也会关闭并触发 'close'，必须用 writeStream.writableFinished
-      // 而非 res.headersSent 来判断（后者在 finish 回调的异步链中可能还未设置）
+      // 客户端中途断开（刷新/关闭浏览器）：req 触发 'close' 且写未完成
+      // 正常上传完成后连接也会关闭触发 'close'，用 writeFinished 标志位区分
       req.on('close', () => {
-        if (writeStream.writableFinished) return; // 已正常写完，忽略
+        if (writeFinished) return; // 已正常写完，忽略
         console.warn('[proxyUpload] 客户端中断上传，清理临时文件：', tmpFile);
         writeStream.destroy();
         fs.rm(tmpFile, { force: true }, () => {});
       });
 
       writeStream.on('finish', () => {
+        writeFinished = true;
         const realBytes = parseInt(req.headers['content-length'] ?? '0', 10);
         if (realBytes > 0) addDailyBytes(roomId, realBytes);
 
@@ -449,18 +455,21 @@ export const RoomsController = {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
 
       const writeStream = fs.createWriteStream(filePath);
+      let writeFinished = false;
       req.pipe(writeStream);
 
       // 客户端中途断开：清理残缺文件，避免 uploads/ 目录积累不完整视频
-      // 同 proxyUpload：用 writeStream.writableFinished 判断是否正常写完，而非 res.headersSent
+      // 同 proxyUpload：用 writeFinished 标志位而非 writeStream.writableFinished，
+      // 避免 req 'close' 与 writeStream 'finish' 几乎同时触发时的 race condition
       req.on('close', () => {
-        if (writeStream.writableFinished) return;
+        if (writeFinished) return;
         console.warn('[uploadLocal] 客户端中断上传，清理残缺文件：', filePath);
         writeStream.destroy();
         fs.rm(filePath, { force: true }, () => {});
       });
 
       writeStream.on('finish', () => {
+        writeFinished = true;
         void (async () => {
           const videoId = uuidv4();
           const video = await addRoomVideo(videoId, roomId, objectKey, rawName, userId);
