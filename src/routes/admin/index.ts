@@ -23,4 +23,7 @@ router.delete('/cowatch/users/:userId', AdminUsersController.remove);
 // CoWatch 房间查看
 router.get('/cowatch/rooms', AdminRoomsController.list);
 
+// CoWatch 房间等级管理
+router.post('/cowatch/rooms/:roomId/plan-level', AdminRoomsController.setPlanLevel);
+
 export default router;

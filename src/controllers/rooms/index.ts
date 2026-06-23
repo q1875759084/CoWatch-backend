@@ -4,7 +4,10 @@ import fs from 'fs';
 import os from 'os';
 import { Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { createRoom, getRoomById, setControllerId } from '../../database/room/index.js';
+import { createRoom, getRoomById, setControllerId, type RoomPlanLevel } from '../../database/room/index.js';
+import { addRoomSubscription } from '../../database/roomSubscription/index.js';
+import { getActivePlans } from '../../database/subscription/index.js';
+import { PLAN_HIERARCHY } from '../../middleware/planGuard.js';
 import { joinRoom, getMembersByRoom, getRoomsByUser } from '../../database/roomMember/index.js';
 import { addRoomVideo, getVideosByRoom, getRoomVideoById, updateDisplayName, deleteRoomVideo } from '../../database/roomVideo/index.js';
 import { insertSegmentViewBatch, type SegmentViewInput } from '../../database/segmentView/index.js';
@@ -50,9 +53,18 @@ export const RoomsController = {
       return;
     }
 
-    const room = await createRoom(roomId, name.trim());
+    // 根据用户当前最高会员等级决定房间初始 plan_level
+    const userPlans = await getActivePlans(userId);
+    const planLevel = deriveRoomPlanLevel(userPlans);
+
+    const room = await createRoom(roomId, name.trim(), userId, planLevel);
     await joinRoom(userId, roomId, true);
     await setControllerId(roomId, userId);
+
+    // 写入房间订阅记录（来源：用户会员等级）
+    if (planLevel !== 'free') {
+      await addRoomSubscription(roomId, planLevel, 'user_membership');
+    }
 
     success(res, {
       roomId: room.id,
@@ -90,6 +102,7 @@ export const RoomsController = {
     success(res, {
       roomId: room.id,
       roomName: room.name,
+      planLevel: room.plan_level,
       activeObjectKey: room.video_url,
       controlMode: room.control_mode,
       controllerId: room.controller_id,
@@ -517,6 +530,7 @@ export const RoomsController = {
   /**
    * GET /api/rooms/:roomId/videos/:videoId/m3u8
    * 动态生成带签名 URL 的 m3u8 内容并返回。
+   * 注意：此接口挂载了 requireRoomActive，free 房间会在中间件层被拦截。
    */
   async getVideoM3u8(req: Request, res: Response): Promise<void> {
     const { videoId } = req.params;
@@ -539,3 +553,21 @@ export const RoomsController = {
     }
   },
 };
+
+/**
+ * 根据用户拥有的 plans 列表推导房间应获得的 plan_level。
+ * 取用户所有有效 plan 中等级最高的一个映射到房间等级。
+ * 若用户无任何 plan，返回 'free'（实际上 requirePlan 守卫会提前拦截，此处兜底）。
+ */
+function deriveRoomPlanLevel(userPlans: string[]): RoomPlanLevel {
+  let maxLevel = 0;
+  for (const p of userPlans) {
+    const level = PLAN_HIERARCHY[p];
+    if (level !== undefined && level > maxLevel) {
+      maxLevel = level;
+    }
+  }
+  if (maxLevel >= PLAN_HIERARCHY['vip:pro']) return 'vip:pro';
+  if (maxLevel >= PLAN_HIERARCHY['vip:basic']) return 'vip:basic';
+  return 'free';
+}

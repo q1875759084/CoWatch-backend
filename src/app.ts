@@ -11,6 +11,7 @@ import { validateOnlineConfig } from './services/ossService.js';
 import routes from './routes/index.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { initWsServer } from './ws/wsServer.js';
+import { scheduleRoomDowngradeJob } from './jobs/roomDowngrade.js';
 
 // ─── 全局兜底：防止未捕获异常 / Promise rejection 导致进程崩溃 ────────────────
 // 主要场景：ffmpeg 切片、WS send 等异步后台任务抛出未预期错误时，
@@ -68,6 +69,9 @@ app.use(errorHandler);
 async function start(): Promise<void> {
   // 数据库迁移（幂等，按序执行 migrations/*.sql）
   await runMigrations(sql);
+
+  // 每日房间降级定时任务（凌晨 3:00）
+  scheduleRoomDowngradeJob();
 
   const server = http.createServer(app);
   initWsServer(server);

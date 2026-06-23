@@ -1,6 +1,10 @@
 import { Request, Response } from 'express';
 import sql from '../../database/index.js';
-import { success } from '../../utils/response.js';
+import { getRoomById, setRoomPlanLevel, type RoomPlanLevel } from '../../database/room/index.js';
+import { addRoomSubscription } from '../../database/roomSubscription/index.js';
+import { success, fail } from '../../utils/response.js';
+
+const VALID_PLAN_LEVELS: RoomPlanLevel[] = ['free', 'vip:basic', 'vip:pro'];
 
 interface RoomWithStats {
   id: string;
@@ -8,6 +12,8 @@ interface RoomWithStats {
   video_url: string | null;
   created_at: number;
   updated_at: number;
+  plan_level: RoomPlanLevel;
+  owner_id: string | null;
   member_count: number;
   /** 当月流量（字节） */
   traffic_month: number;
@@ -20,10 +26,7 @@ interface RoomWithStats {
 export const AdminRoomsController = {
   /**
    * GET /api/admin/cowatch/rooms
-   * 获取全部房间列表（含成员数 + 当月/7天/今日流量统计）
-   *
-   * 流量来源：segment_views 表（由 SW 缓存未命中时上报）
-   * 时间边界均为本地时间零点/月初，字节数为 SUM(bytes)。
+   * 获取全部房间列表（含成员数 + 当月/7天/今日流量统计 + plan_level）
    */
   async list(_req: Request, res: Response): Promise<void> {
     const now = Date.now();
@@ -47,6 +50,8 @@ export const AdminRoomsController = {
         r.video_url,
         r.created_at,
         r.updated_at,
+        r.plan_level,
+        r.owner_id,
         COUNT(DISTINCT rm.user_id)::int AS member_count,
         COALESCE(SUM(CASE WHEN sv.created_at >= ${monthStart} THEN sv.bytes ELSE 0 END), 0)::bigint AS traffic_month,
         COALESCE(SUM(CASE WHEN sv.created_at >= ${day7Start}  THEN sv.bytes ELSE 0 END), 0)::bigint AS traffic_7d,
@@ -59,5 +64,35 @@ export const AdminRoomsController = {
     `;
 
     success(res, { rooms: rows });
+  },
+
+  /**
+   * POST /api/admin/cowatch/rooms/:roomId/plan-level
+   * 手动设置房间等级，Body: { planLevel: 'free' | 'vip:basic' | 'vip:pro' }
+   */
+  async setPlanLevel(req: Request, res: Response): Promise<void> {
+    const { roomId } = req.params;
+    const { planLevel } = req.body as { planLevel?: RoomPlanLevel };
+
+    if (!planLevel || !VALID_PLAN_LEVELS.includes(planLevel)) {
+      fail(res, 400, `planLevel 必须为 ${VALID_PLAN_LEVELS.join(' | ')}`);
+      return;
+    }
+
+    const room = await getRoomById(roomId);
+    if (!room) {
+      fail(res, 404, '房间不存在');
+      return;
+    }
+
+    // 更新房间等级
+    await setRoomPlanLevel(roomId, planLevel);
+
+    // 写入房间订阅记录（admin 手动授权，永久有效）
+    if (planLevel !== 'free') {
+      await addRoomSubscription(roomId, planLevel, 'admin_grant', req.adminId);
+    }
+
+    success(res, null, `房间等级已更新为 ${planLevel}`);
   },
 };
