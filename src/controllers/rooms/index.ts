@@ -358,10 +358,11 @@ export const RoomsController = {
       const writeStream = fs.createWriteStream(tmpFile);
       req.pipe(writeStream);
 
-      // 客户端中途断开（刷新/关闭浏览器）：req 触发 'close' 且响应尚未发出
-      // req.pipe 不会自动关闭 writeStream，需手动销毁并清理残缺临时文件
+      // 客户端中途断开（刷新/关闭浏览器）：req 触发 'close' 且 writeStream 尚未写完
+      // 注意：正常上传完成后连接也会关闭并触发 'close'，必须用 writeStream.writableFinished
+      // 而非 res.headersSent 来判断（后者在 finish 回调的异步链中可能还未设置）
       req.on('close', () => {
-        if (res.headersSent) return; // 已正常响应，忽略
+        if (writeStream.writableFinished) return; // 已正常写完，忽略
         console.warn('[proxyUpload] 客户端中断上传，清理临时文件：', tmpFile);
         writeStream.destroy();
         fs.rm(tmpFile, { force: true }, () => {});
@@ -420,8 +421,11 @@ export const RoomsController = {
       });
 
       writeStream.on('error', (err) => {
+        // writeStream.destroyed 为 true 说明是 req close 时主动调用 destroy() 触发的，
+        // 属于正常中断清理流程，不是真实 I/O 错误，忽略即可
+        if (writeStream.destroyed) return;
         console.error('[proxyUpload] 写临时文件失败', err);
-        fail(res, 500, '文件接收失败');
+        if (!res.headersSent) fail(res, 500, '文件接收失败');
       });
     })();
   },
@@ -448,8 +452,9 @@ export const RoomsController = {
       req.pipe(writeStream);
 
       // 客户端中途断开：清理残缺文件，避免 uploads/ 目录积累不完整视频
+      // 同 proxyUpload：用 writeStream.writableFinished 判断是否正常写完，而非 res.headersSent
       req.on('close', () => {
-        if (res.headersSent) return;
+        if (writeStream.writableFinished) return;
         console.warn('[uploadLocal] 客户端中断上传，清理残缺文件：', filePath);
         writeStream.destroy();
         fs.rm(filePath, { force: true }, () => {});
@@ -505,8 +510,10 @@ export const RoomsController = {
       });
 
       writeStream.on('error', (err) => {
+        // writeStream.destroyed 为 true 说明是 req close 时主动调用 destroy() 触发的，忽略
+        if (writeStream.destroyed) return;
         console.error('[uploadLocal]', err);
-        fail(res, 500, '文件保存失败');
+        if (!res.headersSent) fail(res, 500, '文件保存失败');
       });
     })();
   },
