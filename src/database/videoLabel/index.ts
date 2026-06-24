@@ -9,13 +9,24 @@ export interface VideoLabelRow {
   created_at: number;
 }
 
-export async function getLabelsByVideo(videoId: string): Promise<string[]> {
+/**
+ * 批量查询多个视频的 label 列表，返回 Map<videoId, string[]>。
+ * 用于 listVideos 接口，避免 N+1 查询。
+ */
+export async function getLabelsByVideos(videoIds: string[]): Promise<Map<string, string[]>> {
+  if (videoIds.length === 0) return new Map();
   const rows = await sql`
-    SELECT label FROM video_labels
-    WHERE video_id = ${videoId}
-    ORDER BY sort_order ASC
+    SELECT video_id, label FROM video_labels
+    WHERE video_id = ANY(${sql.array(videoIds)})
+    ORDER BY video_id, sort_order ASC
   `;
-  return rows.map((r) => r.label as string);
+  const result = new Map<string, string[]>();
+  for (const row of rows) {
+    const vid = row.video_id as string;
+    if (!result.has(vid)) result.set(vid, []);
+    result.get(vid)!.push(row.label as string);
+  }
+  return result;
 }
 
 /**

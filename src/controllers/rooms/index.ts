@@ -12,7 +12,7 @@ import { joinRoom, getMembersByRoom, getRoomsByUser } from '../../database/roomM
 import { addRoomVideo, getVideosByRoom, getRoomVideoById, updateDisplayName, deleteRoomVideo } from '../../database/roomVideo/index.js';
 import { insertSegmentViewBatch, type SegmentViewInput } from '../../database/segmentView/index.js';
 import { getTagsByRoomVideo, deleteTagsByVideo } from '../../database/tag/index.js';
-import { getLabelsByVideo, setLabelsForVideo, deleteLabelsByVideo } from '../../database/videoLabel/index.js';
+import { getLabelsByVideos, setLabelsForVideo, deleteLabelsByVideo } from '../../database/videoLabel/index.js';
 import { generateRoomId } from '../../utils/roomId.js';
 import { isOnlineMode, DEFAULT_AVATAR_URL } from '../../services/ossService.js';
 import { addDailyBytes } from '../../middleware/uploadGuard.js';
@@ -144,7 +144,8 @@ export const RoomsController = {
     if (!room) { fail(res, 404, '房间不存在'); return; }
 
     const videos = await getVideosByRoom(roomId);
-    const videosWithLabels = await Promise.all(videos.map(async (v) => ({
+    const labelsMap = await getLabelsByVideos(videos.map((v) => v.id));
+    const videosWithLabels = videos.map((v) => ({
       id: v.id,
       objectKey: v.video_url,
       fileName: v.file_name,
@@ -152,8 +153,8 @@ export const RoomsController = {
       uploaderId: v.uploader_id,
       createdAt: v.created_at,
       hlsStatus: v.hls_status,
-      labels: await getLabelsByVideo(v.id),
-    })));
+      labels: labelsMap.get(v.id) ?? [],
+    }));
     success(res, { videos: videosWithLabels });
   },
 

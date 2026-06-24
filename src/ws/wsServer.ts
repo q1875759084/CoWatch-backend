@@ -66,6 +66,42 @@ function nextSeq(roomId: string): number {
   return seq;
 }
 
+/**
+ * 构建当前房间的完整状态快照。
+ * 被 handleConnection（新成员加入）和 FORCE_SYNC（主动拉回）共用。
+ * 调用方负责决定发给谁，以及是否附带 forceSynced 字段。
+ */
+async function buildRoomStateData(roomId: string, room: RoomRow) {
+  const [members, videos] = await Promise.all([
+    getMembersByRoom(roomId),
+    getVideosByRoom(roomId),
+  ]);
+  const onlineIds = getOnlineUserIds(roomId);
+  const playback = roomPlayback.get(roomId) ?? { isPlaying: false, currentTime: 0 };
+  const activeObjectKey = room.video_url ?? null;
+  const videoUrl = activeObjectKey ? await toPlayUrl(roomId, activeObjectKey) : null;
+  const activeVideo = activeObjectKey ? videos.find((v) => v.video_url === activeObjectKey) : null;
+
+  return {
+    videoUrl,
+    activeObjectKey,
+    activeVideoId: activeVideo?.id ?? null,
+    controlMode: room.control_mode,
+    controllerId: room.controller_id,
+    isPlaying: playback.isPlaying,
+    currentTime: playback.currentTime,
+    strokes: roomStrokes.get(roomId) ?? [],
+    noteContent: roomNote.get(roomId) ?? '',
+    chatMessages: roomChat.get(roomId) ?? [],
+    members: members.map((m) => ({
+      userId: m.user_id,
+      nickname: m.nickname,
+      isAdmin: m.is_admin === 1,
+      isOnline: onlineIds.has(m.user_id),
+    })),
+  };
+}
+
 function canControl(userId: string, room: RoomRow | null): boolean {
   if (!room) return false;
   if (room.control_mode === 'free') return true;
@@ -145,41 +181,15 @@ async function handleConnection(ws: WebSocket, req: IncomingMessage): Promise<vo
     data: { userId, nickname, isAdmin: member.is_admin === 1, isOnline: true },
   });
 
-  const [currentMembers, allVideos] = await Promise.all([
-    getMembersByRoom(roomId),
-    getVideosByRoom(roomId),
-  ]);
-
-  const onlineIds = getOnlineUserIds(roomId);
-  const playback = roomPlayback.get(roomId) ?? { isPlaying: false, currentTime: 0 };
-
-  const activeObjectKey = room.video_url ?? null;
-  const currentVideoUrl = activeObjectKey ? await toPlayUrl(roomId, activeObjectKey) : null;
-  const activeVideo = activeObjectKey ? allVideos.find((v) => v.video_url === activeObjectKey) : null;
+  const roomStateData = await buildRoomStateData(roomId, room);
 
   sendToClient(roomId, userId, {
     type: 'ROOM_STATE',
-    data: {
-      videoUrl: currentVideoUrl,
-      activeObjectKey,
-      activeVideoId: activeVideo?.id ?? null,
-      controlMode: room.control_mode,
-      controllerId: room.controller_id,
-      isPlaying: playback.isPlaying,
-      currentTime: playback.currentTime,
-      strokes: roomStrokes.get(roomId) ?? [],
-      noteContent: roomNote.get(roomId) ?? '',
-      chatMessages: roomChat.get(roomId) ?? [],
-      members: currentMembers.map((m) => ({
-        userId: m.user_id,
-        nickname: m.nickname,
-        isAdmin: m.is_admin === 1,
-        isOnline: onlineIds.has(m.user_id),
-      })),
-    },
+    data: roomStateData,
   });
 
   // ── 自动成为主控（第一个进入房间的人）────────────────────────────────────
+  const onlineIds = getOnlineUserIds(roomId);
   if (onlineIds.size === 1) {
     await setControllerId(roomId, userId);
     broadcast(roomId, {
@@ -415,46 +425,19 @@ async function handleMessage(
       const freshRoomForSync = await getRoomById(roomId);
       if (!freshRoomForSync) break;
 
-      const syncPlayback = roomPlayback.get(roomId) ?? { isPlaying: false, currentTime: 0 };
-      const syncActiveObjectKey = freshRoomForSync.video_url ?? null;
-      const syncVideoUrl = syncActiveObjectKey ? await toPlayUrl(roomId, syncActiveObjectKey) : null;
-      const [syncVideos, syncMembers] = await Promise.all([
-        getVideosByRoom(roomId),
-        getMembersByRoom(roomId),
-      ]);
-      const syncActiveVideo = syncActiveObjectKey ? syncVideos.find((v) => v.video_url === syncActiveObjectKey) : null;
-      const syncOnlineIds = getOnlineUserIds(roomId);
-
-      const roomStateData = {
-        videoUrl: syncVideoUrl,
-        activeObjectKey: syncActiveObjectKey,
-        activeVideoId: syncActiveVideo?.id ?? null,
-        controlMode: freshRoomForSync.control_mode,
-        controllerId: freshRoomForSync.controller_id,
-        isPlaying: syncPlayback.isPlaying,
-        currentTime: syncPlayback.currentTime,
-        strokes: roomStrokes.get(roomId) ?? [],
-        noteContent: roomNote.get(roomId) ?? '',
-        chatMessages: roomChat.get(roomId) ?? [],
-        members: syncMembers.map((m) => ({
-          userId: m.user_id,
-          nickname: m.nickname,
-          isAdmin: m.is_admin === 1,
-          isOnline: syncOnlineIds.has(m.user_id),
-        })),
-      };
+      const forceSyncData = await buildRoomStateData(roomId, freshRoomForSync);
 
       const isController = canControl(userId, freshRoomForSync);
       if (isController) {
         broadcastExcept(roomId, userId, {
           type: 'ROOM_STATE',
-          data: { ...roomStateData, forceSynced: true },
+          data: { ...forceSyncData, forceSynced: true },
         });
         console.log(`[WS] FORCE_SYNC from controller ${userId}, broadcast ROOM_STATE to room ${roomId}`);
       } else {
         sendToClient(roomId, userId, {
           type: 'ROOM_STATE',
-          data: { ...roomStateData, forceSynced: false },
+          data: { ...forceSyncData, forceSynced: false },
         });
         console.log(`[WS] FORCE_SYNC from member ${userId}, unicast ROOM_STATE back`);
       }
