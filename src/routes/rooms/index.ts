@@ -40,6 +40,12 @@ router.get('/:roomId/videos/:videoId/m3u8', roomAuthMiddleware, requireRoomActiv
   RoomsController.getVideoM3u8(req, res),
 );
 
+// HLS 切片代理接口：权限校验通过后 302 重定向到 CDN（线上）或本地 /uploads（本地模式）
+// m3u8 中的切片 URL 均指向此接口，渲染进程不直连 CDN，彻底消除跨域问题
+router.get('/:roomId/videos/:videoId/segments/:segmentName', roomAuthMiddleware, requireRoomActive(), (req, res) =>
+  RoomsController.getSegment(req, res),
+);
+
 // 获取房间信息（不挂 requireRoomActive：前端需要拿到 planLevel 才能显示过期页）
 router.get('/:roomId', (req, res) => RoomsController.getInfo(req, res));
 

@@ -6,7 +6,6 @@ import { getRoomVideoById, updateHlsStatus } from '../database/roomVideo/index.j
 import {
   isOnlineMode,
   uploadHlsSegment,
-  getHlsSegmentSignedUrl,
   listHlsSegments,
 } from './ossService.js';
 
@@ -291,18 +290,23 @@ export async function transcodeToHls(
 /**
  * 动态生成 m3u8 内容（内存拼装，不存 COS）。
  *
- * 每次请求此接口都会重新生成，片段签名 URL 含 2 小时有效期，
- * 跨天复盘时前端重新请求即可刷新签名，缓存仍通过 SW 的 cache-first 命中。
+ * 切片 URL 统一使用后端代理相对路径：
+ *   /api/rooms/{roomId}/videos/{videoId}/segments/{segmentName}
+ *
+ * 好处：
+ *   1. 渲染进程（浏览器 / Electron app://）不再直连 CDN，彻底消除跨域问题
+ *   2. 权限校验集中在 getSegment 接口，CDN 签名仅在服务端生成，不暴露在 m3u8 文件中
+ *   3. 统一 Web / Electron 行为，无需区分环境
  *
  * @param videoId    room_videos.id
- * @param uploadsDir 本地模式：uploads 目录的绝对路径
- * @param userId     请求用户 ID，写入 CDN TypeA 签名的 uid 字段，用于流量归因统计
+ * @param roomId     所属房间 ID，用于拼装代理路径
+ * @param uploadsDir 本地模式：uploads 目录的绝对路径（仅用于读取片段文件名列表）
  * @returns         m3u8 文本字符串
  */
 export async function generateM3u8(
   videoId: string,
+  roomId: string,
   uploadsDir?: string,
-  userId = '0',
 ): Promise<string> {
   const video = await getRoomVideoById(videoId);
   if (!video) {
@@ -318,32 +322,28 @@ export async function generateM3u8(
   }
 
   const hlsPrefix = video.hls_prefix;
-  let segmentKeys: string[];
+  let segmentNames: string[];
 
   if (isOnlineMode()) {
-    // 线上模式：列举 COS 上的片段
-    segmentKeys = await listHlsSegments(hlsPrefix);
+    // 线上模式：列举 COS 上的片段，取文件名部分（去掉前缀目录）
+    const segmentKeys = await listHlsSegments(hlsPrefix);
+    segmentNames = segmentKeys.map((key) => key.slice(hlsPrefix.length));
   } else {
     // 本地模式：读取本地目录
     if (!uploadsDir) throw new Error('[hlsService] 本地模式下 uploadsDir 不能为空');
     const hlsLocalDir = path.join(uploadsDir, hlsPrefix);
-    segmentKeys = fs.readdirSync(hlsLocalDir)
+    segmentNames = fs.readdirSync(hlsLocalDir)
       .filter((f) => f.endsWith('.ts'))
-      .sort()
-      .map((f) => `${hlsPrefix}${f}`);
+      .sort();
   }
 
-  if (segmentKeys.length === 0) {
+  if (segmentNames.length === 0) {
     throw new Error('[hlsService] HLS 片段列表为空，切片可能不完整');
   }
 
-  // 为每个片段生成带签名的访问 URL（线上模式写入 userId 到 CDN uid 字段，用于流量归因）
-  const signedUrls = await Promise.all(
-    segmentKeys.map((key) =>
-      isOnlineMode()
-        ? getHlsSegmentSignedUrl(key, 2 * 3600, userId)
-        : Promise.resolve(`/uploads/${key}`), // 本地模式直接走静态服务
-    ),
+  // 切片 URL 统一为后端代理路径，渲染进程通过此路径请求，后端 302 重定向到 CDN/本地
+  const segmentUrls = segmentNames.map(
+    (name) => `/api/rooms/${roomId}/videos/${videoId}/segments/${name}`,
   );
 
   // 拼装标准 HLS m3u8 格式
@@ -354,7 +354,7 @@ export async function generateM3u8(
     '#EXT-X-MEDIA-SEQUENCE:0',
   ];
 
-  for (const url of signedUrls) {
+  for (const url of segmentUrls) {
     lines.push(`#EXTINF:${HLS_SEGMENT_DURATION}.000000,`);
     lines.push(url);
   }

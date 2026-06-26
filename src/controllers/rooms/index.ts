@@ -14,7 +14,7 @@ import { insertSegmentViewBatch, type SegmentViewInput } from '../../database/se
 import { getTagsByRoomVideo, deleteTagsByVideo } from '../../database/tag/index.js';
 import { getLabelsByVideos, setLabelsForVideo, deleteLabelsByVideo } from '../../database/videoLabel/index.js';
 import { generateRoomId } from '../../utils/roomId.js';
-import { isOnlineMode, DEFAULT_AVATAR_URL } from '../../services/ossService.js';
+import { isOnlineMode, DEFAULT_AVATAR_URL, getHlsSegmentSignedUrl } from '../../services/ossService.js';
 import { addDailyBytes } from '../../middleware/uploadGuard.js';
 import { transcodeToHls, generateM3u8 } from '../../services/hlsService.js';
 import { success, fail } from '../../utils/response.js';
@@ -537,15 +537,16 @@ export const RoomsController = {
 
   /**
    * GET /api/rooms/:roomId/videos/:videoId/m3u8
-   * 动态生成带签名 URL 的 m3u8 内容并返回。
+   * 动态生成 m3u8 内容并返回。
+   * 切片 URL 为后端代理相对路径（/api/rooms/:roomId/videos/:videoId/segments/:segmentName），
+   * 不再直接暴露 CDN 签名 URL，避免跨域问题。
    * 注意：此接口挂载了 requireRoomActive，free 房间会在中间件层被拦截。
    */
   async getVideoM3u8(req: Request, res: Response): Promise<void> {
-    const { videoId } = req.params;
-    const userId = req.userId ?? '0';
+    const { roomId, videoId } = req.params;
 
     try {
-      const m3u8Content = await generateM3u8(videoId, uploadsDir, userId);
+      const m3u8Content = await generateM3u8(videoId, roomId, uploadsDir);
       res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
       res.send(m3u8Content);
     } catch (err) {
@@ -558,6 +559,52 @@ export const RoomsController = {
         console.error('[getVideoM3u8]', err);
         fail(res, 500, '生成 m3u8 失败');
       }
+    }
+  },
+
+  /**
+   * GET /api/rooms/:roomId/videos/:videoId/segments/:segmentName
+   * HLS 切片代理接口：权限校验通过后 302 重定向到 CDN 签名 URL（线上）或本地静态路径（本地模式）。
+   *
+   * 设计要点：
+   *   - 渲染进程（浏览器 / Electron）通过此接口间接访问 CDN，彻底消除跨域问题
+   *   - 签名 URL 在服务端实时生成，客户端不感知 CDN 地址
+   *   - segmentName 校验：必须以 .ts 结尾，且不含路径分隔符（防目录穿越）
+   */
+  async getSegment(req: Request, res: Response): Promise<void> {
+    const { roomId, videoId, segmentName } = req.params;
+
+    // ── 参数校验：防止目录穿越 ──────────────────────────────────────────────
+    if (
+      !segmentName.endsWith('.ts') ||
+      segmentName.includes('/') ||
+      segmentName.includes('..')
+    ) {
+      fail(res, 400, '非法的 segmentName');
+      return;
+    }
+
+    const video = await getRoomVideoById(videoId);
+    if (!video || video.room_id !== roomId) {
+      fail(res, 404, '视频不存在');
+      return;
+    }
+
+    if (!video.hls_prefix) {
+      fail(res, 404, '视频切片不存在');
+      return;
+    }
+
+    const objectKey = `${video.hls_prefix}${segmentName}`;
+
+    if (isOnlineMode()) {
+      // 线上模式：生成带时效签名的 CDN URL，302 重定向
+      // 默认有效期 10 分钟（单个切片请求耗时远小于此值，足够安全）
+      const signedUrl = await getHlsSegmentSignedUrl(objectKey, 10 * 60);
+      res.redirect(302, signedUrl);
+    } else {
+      // 本地模式：重定向到 /uploads 静态服务
+      res.redirect(302, `/uploads/${objectKey}`);
     }
   },
 };
