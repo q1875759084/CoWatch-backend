@@ -66,6 +66,19 @@ router.put('/:roomId/upload', roomAuthMiddleware, requireRoomActive(), (req, res
   RoomsController.uploadLocal(req, res),
 );
 
+// Electron 实时录制：上传单个 HLS .ts 切片
+// 请求体为原始二进制流，Content-Type: video/MP2T，目标 objectKey 通过 X-Object-Key 头传递
+// 注：录制功能暂不设权限门槛，后续迭代决定（见 spec/electron-recorder.md §3.1）
+router.post('/:roomId/recording/segment', roomAuthMiddleware, requireRoomActive(), (req, res) =>
+  RoomsController.recordingSegment(req, res),
+);
+
+// Electron 实时录制：录制结束确认，写入视频记录并广播
+// 注：录制功能暂不设权限门槛，后续迭代决定（见 spec/electron-recorder.md §3.1）
+router.post('/:roomId/recording/finish', roomAuthMiddleware, requireRoomActive(), (req, res) =>
+  RoomsController.recordingFinish(req, res),
+);
+
 // 重命名视频（上传者 或 管理员；free 房间被拦截）
 router.patch('/:roomId/videos/:videoId/name', roomAuthMiddleware, requireRoomActive(), (req, res) =>
   RoomsController.renameVideo(req, res),

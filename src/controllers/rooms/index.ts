@@ -9,12 +9,12 @@ import { addRoomSubscription } from '../../database/roomSubscription/index.js';
 import { getActivePlans } from '../../database/subscription/index.js';
 import { PLAN_HIERARCHY } from '../../middleware/planGuard.js';
 import { joinRoom, getMembersByRoom, getRoomsByUser } from '../../database/roomMember/index.js';
-import { addRoomVideo, getVideosByRoom, getRoomVideoById, updateDisplayName, deleteRoomVideo } from '../../database/roomVideo/index.js';
+import { addRoomVideo, getVideosByRoom, getRoomVideoById, updateDisplayName, deleteRoomVideo, updateHlsStatus } from '../../database/roomVideo/index.js';
 import { insertSegmentViewBatch, type SegmentViewInput } from '../../database/segmentView/index.js';
 import { getTagsByRoomVideo, deleteTagsByVideo } from '../../database/tag/index.js';
 import { getLabelsByVideos, setLabelsForVideo, deleteLabelsByVideo } from '../../database/videoLabel/index.js';
 import { generateRoomId } from '../../utils/roomId.js';
-import { isOnlineMode, DEFAULT_AVATAR_URL, getHlsSegmentSignedUrl } from '../../services/ossService.js';
+import { isOnlineMode, DEFAULT_AVATAR_URL, getHlsSegmentSignedUrl, uploadHlsSegment } from '../../services/ossService.js';
 import { addDailyBytes } from '../../middleware/uploadGuard.js';
 import { transcodeToHls, generateM3u8 } from '../../services/hlsService.js';
 import { success, fail } from '../../utils/response.js';
@@ -493,6 +493,159 @@ export const RoomsController = {
         fail(res, 500, '文件保存失败');
       });
     })();
+  },
+
+  /**
+   * POST /api/rooms/:roomId/recording/segment
+   *
+   * Electron 实时录制专用：接收单个 HLS .ts 切片，存 COS 或本地磁盘。
+   *
+   * 请求体：原始二进制流（Content-Type: video/MP2T）
+   * 请求头 X-Object-Key：目标 objectKey（由 Electron 生成）
+   * 响应：{ objectKey }
+   */
+  recordingSegment(req: Request, res: Response): void {
+    const { roomId } = req.params;
+    const userId = req.userId!;
+    const objectKey = req.headers['x-object-key'] as string | undefined;
+
+    if (!objectKey || !objectKey.endsWith('.ts')) {
+      fail(res, 400, '缺少合法的 X-Object-Key 请求头（需以 .ts 结尾）');
+      return;
+    }
+
+    void (async () => {
+      try {
+        const room = await getRoomById(roomId);
+        if (!room) { fail(res, 404, '房间不存在'); return; }
+
+        if (isOnlineMode()) {
+          // 线上模式：先落盘临时文件，再上传 COS
+          const tmpPath = path.join(os.tmpdir(), `rec-seg-${uuidv4()}.ts`);
+          const writeStream = fs.createWriteStream(tmpPath);
+          req.pipe(writeStream);
+
+          await new Promise<void>((resolve, reject) => {
+            writeStream.on('finish', () => resolve());
+            writeStream.on('error', (err) => reject(err));
+          });
+
+          try {
+            await uploadHlsSegment(objectKey, tmpPath);
+          } finally {
+            fs.unlink(tmpPath, () => { /* 静默清理 */ });
+          }
+
+          console.log(`[recordingSegment] 切片已上传 COS：${objectKey} (userId=${userId})`);
+        } else {
+          // 本地模式：写入 uploads 目录
+          const localPath = path.join(uploadsDir, objectKey);
+          fs.mkdirSync(path.dirname(localPath), { recursive: true });
+          const writeStream = fs.createWriteStream(localPath);
+          req.pipe(writeStream);
+          await new Promise<void>((resolve, reject) => {
+            writeStream.on('finish', () => resolve());
+            writeStream.on('error', (err) => reject(err));
+          });
+          console.log(`[recordingSegment] 切片已写入本地：${localPath} (userId=${userId})`);
+        }
+
+        success(res, { objectKey });
+      } catch (err) {
+        console.error('[recordingSegment] 处理失败：', (err as Error).message);
+        fail(res, 500, '切片上传失败');
+      }
+    })();
+  },
+
+  /**
+   * POST /api/rooms/:roomId/recording/finish
+   *
+   * Electron 实时录制专用：录制结束后，由 Electron 调用此接口。
+   * 后端写入 room_videos 记录（hls_status=ready），广播 VIDEO_ADDED。
+   * 无需转码——切片已在 COS，可直接播放。
+   *
+   * 请求体：{ segmentKeys: string[], displayName: string, durationSeconds: number }
+   * 响应：{ videoId: string }
+   */
+  async recordingFinish(req: Request, res: Response): Promise<void> {
+    const { roomId } = req.params;
+    const userId = req.userId!;
+    const {
+      segmentKeys,
+      displayName,
+      durationSeconds,
+    } = req.body as {
+      segmentKeys?: unknown;
+      displayName?: unknown;
+      durationSeconds?: unknown;
+    };
+
+    // ── 参数校验 ────────────────────────────────────────────────────────────
+    if (!Array.isArray(segmentKeys) || segmentKeys.length === 0) {
+      fail(res, 400, 'segmentKeys 必须为非空数组');
+      return;
+    }
+    if (segmentKeys.length > 1000) {
+      fail(res, 400, 'segmentKeys 长度不得超过 1000');
+      return;
+    }
+    for (const key of segmentKeys) {
+      if (typeof key !== 'string' || !key.endsWith('.ts')) {
+        fail(res, 400, 'segmentKeys 中每项必须为以 .ts 结尾的字符串');
+        return;
+      }
+    }
+    if (typeof displayName !== 'string' || displayName.trim().length === 0) {
+      fail(res, 400, 'displayName 必须为非空字符串');
+      return;
+    }
+    const duration = typeof durationSeconds === 'number' ? durationSeconds : 0;
+
+    // 从第一个 objectKey 提取 hlsPrefix（截至最后一个 / 的部分）
+    const firstKey = segmentKeys[0] as string;
+    const lastSlash = firstKey.lastIndexOf('/');
+    if (lastSlash === -1) {
+      fail(res, 400, 'segmentKeys 格式不正确，应包含目录路径');
+      return;
+    }
+    const hlsPrefix = firstKey.slice(0, lastSlash + 1);
+
+    try {
+      const room = await getRoomById(roomId);
+      if (!room) { fail(res, 404, '房间不存在'); return; }
+
+      const videoId = uuidv4();
+      // video_url 存 hlsPrefix（与普通上传一致，下游 getSegment / generateM3u8 复用）
+      const video = await addRoomVideo(videoId, roomId, hlsPrefix, displayName.trim(), userId);
+
+      // 切片已在 COS，直接标 ready（跳过转码），同时写入 durationSeconds 供 generateM3u8 修正 #EXTINF
+      await updateHlsStatus(videoId, 'ready', hlsPrefix, duration > 0 ? duration : undefined);
+
+      console.log(
+        `[recordingFinish] 录制写库完成：videoId=${videoId} segments=${segmentKeys.length}` +
+        ` duration=${duration}s hlsPrefix=${hlsPrefix} (userId=${userId})`,
+      );
+
+      // 广播 VIDEO_ADDED，房间内所有成员实时看到新视频
+      broadcast(roomId, {
+        type: 'VIDEO_ADDED',
+        data: {
+          id: video.id,
+          objectKey: hlsPrefix,
+          m3u8ObjectKey: hlsPrefix,
+          videoUrl: `/api/rooms/${roomId}/videos/${videoId}/m3u8`,
+          fileName: video.file_name,
+          uploaderId: video.uploader_id,
+          createdAt: video.created_at,
+        },
+      });
+
+      success(res, { videoId });
+    } catch (err) {
+      console.error('[recordingFinish] 处理失败：', (err as Error).message);
+      fail(res, 500, '录制记录保存失败');
+    }
   },
 
   /**

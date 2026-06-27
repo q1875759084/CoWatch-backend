@@ -10,6 +10,8 @@ export interface RoomVideoRow {
   hls_prefix: string | null;
   hls_status: string;
   display_name: string | null;
+  /** 视频总时长（秒）。Electron 录制视频由 finish 接口写入；普通上传视频为 null */
+  duration_seconds: number | null;
 }
 
 export async function addRoomVideo(
@@ -44,8 +46,15 @@ export async function updateHlsStatus(
   videoId: string,
   status: 'pending' | 'processing' | 'ready' | 'error',
   hlsPrefix?: string,
+  durationSeconds?: number,
 ): Promise<void> {
-  if (hlsPrefix !== undefined) {
+  if (hlsPrefix !== undefined && durationSeconds !== undefined) {
+    await sql`
+      UPDATE room_videos
+      SET hls_status = ${status}, hls_prefix = ${hlsPrefix}, duration_seconds = ${durationSeconds}
+      WHERE id = ${videoId}
+    `;
+  } else if (hlsPrefix !== undefined) {
     await sql`
       UPDATE room_videos SET hls_status = ${status}, hls_prefix = ${hlsPrefix}
       WHERE id = ${videoId}

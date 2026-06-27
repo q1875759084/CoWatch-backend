@@ -346,6 +346,17 @@ export async function generateM3u8(
     (name) => `/api/rooms/${roomId}/videos/${videoId}/segments/${name}`,
   );
 
+  // 计算最后一片的真实时长：
+  //   - 若 video.duration_seconds 有值（Electron 录制视频），最后一片 = 总时长 - 前几片之和
+  //   - 否则（普通上传），所有片都使用固定 HLS_SEGMENT_DURATION
+  const totalDuration = typeof video.duration_seconds === 'number' && video.duration_seconds > 0
+    ? video.duration_seconds
+    : null;
+  const count = segmentUrls.length;
+  const lastSegDuration = totalDuration !== null
+    ? Math.max(totalDuration - HLS_SEGMENT_DURATION * (count - 1), 0)
+    : HLS_SEGMENT_DURATION;
+
   // 拼装标准 HLS m3u8 格式
   const lines: string[] = [
     '#EXTM3U',
@@ -354,9 +365,10 @@ export async function generateM3u8(
     '#EXT-X-MEDIA-SEQUENCE:0',
   ];
 
-  for (const url of segmentUrls) {
-    lines.push(`#EXTINF:${HLS_SEGMENT_DURATION}.000000,`);
-    lines.push(url);
+  for (let i = 0; i < segmentUrls.length; i++) {
+    const segDur = i === segmentUrls.length - 1 ? lastSegDuration : HLS_SEGMENT_DURATION;
+    lines.push(`#EXTINF:${segDur.toFixed(6)},`);
+    lines.push(segmentUrls[i]!);
   }
 
   lines.push('#EXT-X-ENDLIST');

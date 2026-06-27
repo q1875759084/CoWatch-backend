@@ -37,7 +37,7 @@ const corsOrigins = process.env.CORS_ORIGIN
 app.use(cors({
   origin: corsOrigins,
   credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Object-Key'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
 }));
 app.use(cookieParser());
