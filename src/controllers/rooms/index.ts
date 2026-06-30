@@ -9,7 +9,8 @@ import { addRoomSubscription } from '../../database/roomSubscription/index.js';
 import { getActivePlans } from '../../database/subscription/index.js';
 import { PLAN_HIERARCHY } from '../../middleware/planGuard.js';
 import { joinRoom, getMembersByRoom, getRoomsByUser } from '../../database/roomMember/index.js';
-import { addRoomVideo, getVideosByRoom, getRoomVideoById, updateDisplayName, deleteRoomVideo, updateHlsStatus } from '../../database/roomVideo/index.js';
+import { addRoomVideo, getVideosByRoom, getVideosByRoomWithNickname, getRoomVideoById, updateDisplayName, deleteRoomVideo, updateHlsStatus } from '../../database/roomVideo/index.js';
+import { getUserById } from '../../database/user/index.js';
 import { insertSegmentViewBatch, type SegmentViewInput } from '../../database/segmentView/index.js';
 import { getTagsByRoomVideo, deleteTagsByVideo } from '../../database/tag/index.js';
 import { getLabelsByVideos, setLabelsForVideo, deleteLabelsByVideo } from '../../database/videoLabel/index.js';
@@ -148,7 +149,7 @@ export const RoomsController = {
     const room = await getRoomById(roomId);
     if (!room) { fail(res, 404, '房间不存在'); return; }
 
-    const videos = await getVideosByRoom(roomId);
+    const videos = await getVideosByRoomWithNickname(roomId);
     const labelsMap = await getLabelsByVideos(videos.map((v) => v.id));
     const videosWithLabels = videos.map((v) => ({
       id: v.id,
@@ -156,6 +157,7 @@ export const RoomsController = {
       fileName: v.file_name,
       displayName: v.display_name ?? null,
       uploaderId: v.uploader_id,
+      uploaderNickname: v.uploader_nickname,
       createdAt: v.created_at,
       hlsStatus: v.hls_status,
       labels: labelsMap.get(v.id) ?? [],
@@ -379,6 +381,10 @@ export const RoomsController = {
           const needTranscode = room.plan_level === 'vip:pro';
           console.log(`[proxyUpload] 开始异步处理：videoId=${videoId} transcode=${needTranscode} tmpFile=${tmpFile}`);
 
+          // 预先查询上传人昵称，广播时附带（异步，不阻塞响应）
+          const uploaderUser = await getUserById(userId).catch(() => null);
+          const uploaderNickname = uploaderUser?.nickname ?? '';
+
           void transcodeToHls(
             videoId,
             tmpFile,
@@ -393,6 +399,7 @@ export const RoomsController = {
                   videoUrl: `/api/rooms/${roomId}/videos/${videoId}/m3u8`,
                   fileName: video.file_name,
                   uploaderId: video.uploader_id,
+                  uploaderNickname,
                   createdAt: video.created_at,
                 },
               });
@@ -456,6 +463,10 @@ export const RoomsController = {
           const needTranscode = room.plan_level === 'vip:pro';
           console.log(`[uploadLocal] 开始异步处理：videoId=${videoId} transcode=${needTranscode} objectKey=${objectKey}`);
 
+          // 预先查询上传人昵称，广播时附带（异步，不阻塞响应）
+          const uploaderUserLocal = await getUserById(userId).catch(() => null);
+          const uploaderNicknameLocal = uploaderUserLocal?.nickname ?? '';
+
           void transcodeToHls(
             videoId,
             objectKey,
@@ -470,6 +481,7 @@ export const RoomsController = {
                   videoUrl: `/api/rooms/${roomId}/videos/${videoId}/m3u8`,
                   fileName: video.file_name,
                   uploaderId: video.uploader_id,
+                  uploaderNickname: uploaderNicknameLocal,
                   createdAt: video.created_at,
                 },
               });
@@ -658,6 +670,10 @@ export const RoomsController = {
         ` duration=${duration}s hlsPrefix=${hlsPrefix} (userId=${userId})`,
       );
 
+      // 查询上传人昵称，广播时附带
+      const uploaderUserFinish = await getUserById(userId).catch(() => null);
+      const uploaderNicknameFinish = uploaderUserFinish?.nickname ?? '';
+
       // 广播 VIDEO_ADDED，房间内所有成员实时看到新视频
       broadcast(roomId, {
         type: 'VIDEO_ADDED',
@@ -668,6 +684,7 @@ export const RoomsController = {
           videoUrl: `/api/rooms/${roomId}/videos/${videoId}/m3u8`,
           fileName: video.file_name,
           uploaderId: video.uploader_id,
+          uploaderNickname: uploaderNicknameFinish,
           createdAt: video.created_at,
         },
       });

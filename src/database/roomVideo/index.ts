@@ -32,9 +32,28 @@ export async function addRoomVideo(
 
 export async function getVideosByRoom(roomId: string): Promise<RoomVideoRow[]> {
   const rows = await sql`
-    SELECT * FROM room_videos WHERE room_id = ${roomId} ORDER BY created_at ASC
+    SELECT * FROM room_videos WHERE room_id = ${roomId} ORDER BY created_at DESC
   `;
   return rows as unknown as RoomVideoRow[];
+}
+
+export interface RoomVideoWithNicknameRow extends RoomVideoRow {
+  uploader_nickname: string;
+}
+
+/**
+ * 查询房间视频列表，同时 JOIN users 表获取上传人昵称。
+ * 用于 listVideos 接口，避免 N+1 查询。
+ */
+export async function getVideosByRoomWithNickname(roomId: string): Promise<RoomVideoWithNicknameRow[]> {
+  const rows = await sql`
+    SELECT rv.*, u.nickname AS uploader_nickname
+    FROM room_videos rv
+    LEFT JOIN users u ON u.id = rv.uploader_id
+    WHERE rv.room_id = ${roomId}
+    ORDER BY rv.created_at DESC
+  `;
+  return rows as unknown as RoomVideoWithNicknameRow[];
 }
 
 export async function getRoomVideoById(id: string): Promise<RoomVideoRow | null> {

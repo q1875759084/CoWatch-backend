@@ -93,9 +93,10 @@ echo   Encoding... (high CPU is normal)
 echo  ------------------------------------------
 echo.
 
+:: -vf scale: limit max width to 1600px (same as recorder hardware encoding), keep aspect ratio, height rounded to even
 :: -pix_fmt yuv420p: compatible with 10bit source files
 :: -y: overwrite output if exists
-"%FFMPEG_CMD%" -i "%INPUT%" -c:v libx264 -crf 30 -preset veryfast -pix_fmt yuv420p -c:a aac -b:a 128k -movflags +faststart -g 300 -keyint_min 300 -sc_threshold 0 -y "%OUTPUT%"
+"%FFMPEG_CMD%" -i "%INPUT%" -vf "scale=w='min(iw,1600)':h=-2" -c:v libx264 -crf 30 -preset veryfast -pix_fmt yuv420p -c:a aac -b:a 128k -movflags +faststart -g 300 -keyint_min 300 -sc_threshold 0 -y "%OUTPUT%"
 
 if errorlevel 1 (
     echo.
