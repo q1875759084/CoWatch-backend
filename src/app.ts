@@ -12,6 +12,7 @@ import routes from './routes/index.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { initWsServer } from './ws/wsServer.js';
 import { scheduleRoomDowngradeJob } from './jobs/roomDowngrade.js';
+import { scheduleRecordingTimeoutJob } from './jobs/recordingTimeout.js';
 
 // ─── 全局兜底：防止未捕获异常 / Promise rejection 导致进程崩溃 ────────────────
 // 主要场景：ffmpeg 切片、WS send 等异步后台任务抛出未预期错误时，
@@ -72,6 +73,10 @@ async function start(): Promise<void> {
 
   // 每日房间降级定时任务（凌晨 3:00）
   scheduleRoomDowngradeJob();
+
+  // 录制超时自动收尾任务（每 3 分钟）
+  // 覆盖场景：Electron 客户端崩溃/被强杀，finish 接口未被调用，已上传切片自动生成视频记录
+  scheduleRecordingTimeoutJob();
 
   const server = http.createServer(app);
   initWsServer(server);

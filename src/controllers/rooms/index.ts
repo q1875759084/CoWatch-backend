@@ -18,6 +18,11 @@ import { isOnlineMode, DEFAULT_AVATAR_URL, getHlsSegmentSignedUrl, uploadHlsSegm
 import { addDailyBytes } from '../../middleware/uploadGuard.js';
 import { transcodeToHls, generateM3u8 } from '../../services/hlsService.js';
 import { success, fail } from '../../utils/response.js';
+import {
+  createRecordingSession,
+  appendSegmentKey,
+  markSessionFinished,
+} from '../../database/recordingSession/index.js';
 import { broadcast } from '../ws/registry.js';
 
 // ─── 本地存储配置（仅 isOnlineMode() === false 时使用）────────────────────────
@@ -550,6 +555,23 @@ export const RoomsController = {
           console.log(`[recordingSegment] 切片已写入本地：${localPath} (userId=${userId})`);
         }
 
+        // ── 更新录制 session 活跃状态 ────────────────────────────────────────
+        // objectKey 格式：cowatch/{roomId}/recordings/{sessionId}/seg001.ts
+        // 从路径中提取 sessionId，用于超时自动收尾（方案B）
+        const parts = objectKey.split('/');
+        // parts: ['cowatch', roomId, 'recordings', sessionId, 'seg001.ts']
+        const sessionId = parts.length >= 5 ? parts[3] : null;
+        if (sessionId) {
+          const now = Date.now();
+          // 首片：创建 session；后续片：仅追加 key + 刷新活跃时间
+          // fire-and-forget：session 跟踪失败不能阻塞切片上传主路径
+          createRecordingSession(sessionId, roomId, userId, objectKey, now)
+            .then(() => appendSegmentKey(sessionId, objectKey, now))
+            .catch((e: unknown) =>
+              console.warn('[recordingSegment] session 跟踪失败（无阻塞）：', (e as Error).message),
+            );
+        }
+
         success(res, { objectKey });
       } catch (err) {
         console.error('[recordingSegment] 处理失败：', (err as Error).message);
@@ -621,6 +643,15 @@ export const RoomsController = {
 
       // 切片已在 COS，直接标 ready（跳过转码），同时写入 durationSeconds 供 generateM3u8 修正 #EXTINF
       await updateHlsStatus(videoId, 'ready', hlsPrefix, duration > 0 ? duration : undefined);
+
+      // 将 recording_session 标记为正常结束，防止定时任务重复收尾（方案B 幂等保护）
+      // 从 hlsPrefix 逆推 sessionId：hlsPrefix = "cowatch/{roomId}/recordings/{sessionId}/"
+      const sessionIdMatch = hlsPrefix.match(/recordings\/([^/]+)\//);
+      if (sessionIdMatch) {
+        await markSessionFinished(sessionIdMatch[1]!).catch((e) =>
+          console.warn('[recordingFinish] 标记 session 失败（无阻塞）：', (e as Error).message),
+        );
+      }
 
       console.log(
         `[recordingFinish] 录制写库完成：videoId=${videoId} segments=${segmentKeys.length}` +
