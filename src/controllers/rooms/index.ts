@@ -15,7 +15,7 @@ import { insertSegmentViewBatch, type SegmentViewInput } from '../../database/se
 import { getTagsByRoomVideo, deleteTagsByVideo } from '../../database/tag/index.js';
 import { getLabelsByVideos, setLabelsForVideo, deleteLabelsByVideo } from '../../database/videoLabel/index.js';
 import { generateRoomId } from '../../utils/roomId.js';
-import { isOnlineMode, DEFAULT_AVATAR_URL, getHlsSegmentSignedUrl, uploadHlsSegment } from '../../services/ossService.js';
+import { isOnlineMode, DEFAULT_AVATAR_URL, getHlsSegmentSignedUrl, uploadHlsSegment, deleteObjects, listHlsSegments } from '../../services/ossService.js';
 import { addDailyBytes } from '../../middleware/uploadGuard.js';
 import { transcodeToHls, generateM3u8 } from '../../services/hlsService.js';
 import { success, fail } from '../../utils/response.js';
@@ -29,6 +29,30 @@ import { broadcast } from '../ws/registry.js';
 // ─── 本地存储配置（仅 isOnlineMode() === false 时使用）────────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const uploadsDir = path.resolve(__dirname, '../../../uploads');
+
+// ─── COS 文件清理辅助函数 ─────────────────────────────────────────────────────
+
+/**
+ * 删除视频在 COS 上对应的所有 HLS 切片文件
+ *
+ * 上传流程：前端 → 后端临时目录 → ffmpeg 切片 → 仅 .ts 文件上传到 COS。
+ * 原始视频（video_url / objectKey）从未上传到 COS，无需删除。
+ * 需要删除的资源：HLS 切片目录下的全部 .ts 文件（前缀 = hls_prefix 字段）。
+ *
+ * 本地模式（isOnlineMode() === false）下，deleteObjects 内部已静默跳过，
+ * 本函数无需额外判断。
+ *
+ * @param hlsPrefix  DB hls_prefix 字段值（HLS 切片目录前缀，可为 null）
+ */
+async function deleteCosFiles(hlsPrefix: string | null): Promise<void> {
+  if (!hlsPrefix) return;
+
+  const segmentKeys = await listHlsSegments(hlsPrefix);
+  if (segmentKeys.length > 0) {
+    await deleteObjects(segmentKeys);
+  }
+  console.log(`[deleteCosFiles] ✅ HLS 切片已删除 prefix=${hlsPrefix} count=${segmentKeys.length}`);
+}
 
 export const RoomsController = {
 
@@ -257,6 +281,11 @@ export const RoomsController = {
     await deleteTagsByVideo(videoId);
     await deleteLabelsByVideo(videoId);
     await deleteRoomVideo(videoId);
+
+    // 异步删除 COS 上的文件（不阻塞响应；失败仅打印日志，不影响用户侧删除结果）
+    void deleteCosFiles(video.hls_prefix).catch((err: unknown) => {
+      console.error(`[deleteVideo] COS 文件删除失败 videoId=${videoId}:`, err);
+    });
 
     broadcast(roomId, {
       type: 'VIDEO_DELETED',

@@ -331,6 +331,72 @@ export function getHlsSegmentSignedUrl(
 }
 
 /**
+ * 删除 COS 单个对象（仅线上模式有效；本地模式静默跳过）
+ *
+ * @param objectKey  要删除的对象键，如 cowatch/{roomId}/{uuid}-video.mp4
+ */
+export async function deleteObject(objectKey: string): Promise<void> {
+  if (!isOnlineMode()) {
+    console.log(`[ossService] 🏠 本地模式：跳过 COS 删除 objectKey=${objectKey}`);
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    getClient().deleteObject(
+      {
+        Bucket: process.env.COS_BUCKET!,
+        Region: process.env.COS_REGION!,
+        Key: objectKey,
+      },
+      (err) => {
+        if (err) reject(err);
+        else resolve();
+      },
+    );
+  });
+}
+
+/**
+ * 批量删除 COS 对象（仅线上模式有效；本地模式静默跳过）
+ *
+ * COS SDK 单次最多删除 1000 个对象，超出时自动分批发送。
+ *
+ * @param objectKeys  要删除的对象键数组
+ */
+export async function deleteObjects(objectKeys: string[]): Promise<void> {
+  if (!isOnlineMode()) {
+    console.log(`[ossService] 🏠 本地模式：跳过 COS 批量删除，共 ${objectKeys.length} 个对象`);
+    return;
+  }
+  if (objectKeys.length === 0) return;
+
+  // COS 单次批量删除上限 1000 个
+  const BATCH_SIZE = 1000;
+  for (let i = 0; i < objectKeys.length; i += BATCH_SIZE) {
+    const batch = objectKeys.slice(i, i + BATCH_SIZE);
+    await new Promise<void>((resolve, reject) => {
+      getClient().deleteMultipleObject(
+        {
+          Bucket: process.env.COS_BUCKET!,
+          Region: process.env.COS_REGION!,
+          Objects: batch.map((Key) => ({ Key })),
+          Quiet: true, // Quiet 模式：响应体仅包含删除失败的条目
+        },
+        (err, data) => {
+          if (err) { reject(err); return; }
+          // data.Error 包含删除失败的条目（Quiet 模式下 data.Deleted 为空数组）
+          const errors = data?.Error ?? [];
+          if (errors.length > 0) {
+            reject(new Error(`[ossService] 批量删除部分失败：${JSON.stringify(errors)}`));
+          } else {
+            resolve();
+          }
+        },
+      );
+    });
+  }
+}
+
+/**
  * 列举 COS 某前缀下所有 .ts 文件（用于 generateM3u8 动态拼装）
  *
  * 返回按文件名升序排列的 objectKey 列表（seg000.ts, seg001.ts, ...）
